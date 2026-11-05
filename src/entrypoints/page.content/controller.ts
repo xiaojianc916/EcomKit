@@ -57,6 +57,8 @@ export interface PageController {
   current(): { platform: string; pageKind: string; productId: string } | null;
   snapshot(): ProductSnapshot | null;
   refreshDir(): Promise<DirState>;
+  /** 当前目录状态（外壳查过一次后缓存的） */
+  dirState(): DirState;
   /** 页面侧已就绪的抓包数据源，给 resolver 用 */
   captures(ruleId: string): AsyncIterable<CapturedPayload>;
   /** React 外部 store 协议：状态变化时回调 */
@@ -408,6 +410,7 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     current: () => match,
     snapshot: () => snapshot,
     refreshDir,
+    dirState: () => dir,
     captures: (ruleId: string) =>
       bridge ? bridge.captures(ruleId) : emptyCaptures(),
 

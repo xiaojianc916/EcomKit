@@ -91,8 +91,12 @@ export function createPageApi(controller: PageController): PageApi {
     },
 
     dir: {
+      /**
+       * 目录状态由外壳查一次后下传（§9.4 只查一次），功能模块从 PanelProps.dir 取。
+       * 这里保留接口是为了让 popup / 快捷操作能主动问一次。
+       */
       status(): DirState {
-        return controller.snapshot() ? ({ status: 'unset' } as DirState) : ({ status: 'unset' } as DirState);
+        return controller.dirState();
       },
       openGrant(reason) {
         void sendMessage('fs.openGrant',
