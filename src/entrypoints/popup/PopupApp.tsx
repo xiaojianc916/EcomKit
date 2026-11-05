@@ -1,7 +1,7 @@
-import { errorMessage } from '../../kernel/errors/messages';
 import { useEffect, useState } from 'react';
-import { sendMessage } from '../../kernel/messaging/runtime';
+import { errorMessage } from '../../kernel/errors/messages';
 import type { TabState } from '../../kernel/messaging/protocol';
+import { sendMessage } from '../../kernel/messaging/runtime';
 import type { AssetKind } from '../../kernel/model/asset';
 
 /**
@@ -90,7 +90,11 @@ export function PopupApp() {
         </div>
         <footer className="pp__ftr">
           <span>{dirLabel(state)}</span>
-          <button type="button" className="pp__link" onClick={() => void sendMessage('shell.openOptions')}>
+          <button
+            type="button"
+            className="pp__link"
+            onClick={() => void sendMessage('shell.openOptions')}
+          >
             设置
           </button>
         </footer>
@@ -134,7 +138,7 @@ export function PopupApp() {
               type="button"
               className="pp__row-btn"
               disabled={counts[kind] === 0}
-              onClick={() => void download(kind)}
+              onClick={() => void download([kind])}
             >
               下载
             </button>
@@ -151,7 +155,11 @@ export function PopupApp() {
       </div>
       <footer className="pp__ftr">
         <span>{dirLabel(state)}</span>
-        <button type="button" className="pp__link" onClick={() => void sendMessage('shell.openOptions')}>
+        <button
+          type="button"
+          className="pp__link"
+          onClick={() => void sendMessage('shell.openOptions')}
+        >
           设置
         </button>
       </footer>
@@ -173,13 +181,22 @@ function dirLabel(state: TabState | null): string {
   return '未选择保存位置';
 }
 
-async function download(only?: AssetKind): Promise<void> {
-  // popup 不自己拼计划，交给页面（它知道当前快照和勾选状态）
+/**
+ * 触发下载。popup 不自己拼计划，交给页面（它知道真实快照）。
+ *
+ * `kinds` 为空数组表示「按页面里的勾选」；否则只下这几类。
+ * 旧实现忽略 popup 上的勾选框，永远发 'download-checked' ——
+ * 用户取消勾选「视频」后点下载，视频照样会下。
+ */
+async function download(kinds?: AssetKind[]): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
-  await chrome.tabs.sendMessage(tab.id, {
-    type: 'ecbox:command',
-    command: only ? `download-${only}` : 'download-checked',
-  });
+  const command =
+    kinds === undefined || kinds.length === 0
+      ? 'download-checked'
+      : kinds.length === 1
+        ? `download-${kinds[0]}`
+        : `download-kinds:${kinds.join(',')}`;
+  await chrome.tabs.sendMessage(tab.id, { type: 'ecbox:command', command });
   window.close();
 }

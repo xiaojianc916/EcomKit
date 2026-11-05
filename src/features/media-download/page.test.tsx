@@ -185,9 +185,29 @@ describe('MediaDownloadPanel 组装（§8.6）', () => {
     const spy = makeApi();
     renderPanel(spy);
     fireEvent.click(screen.getByRole('checkbox', { name: '下载主图' }));
-    expect(
-      screen.getByRole('button', { name: /下载SKU 图、详情图和视频 · 26 个/ }),
-    ).toBeInTheDocument();
+    // 只剩详情图有素材并已勾选 → 走「下载 N 个文件」；N 来自真实计划而不是快照总数
+    expect(screen.getByRole('button', { name: /下载 26 个文件/ })).toBeInTheDocument();
+  });
+
+  it('主按钮的数量必须等于计划条数，不能是快照总数（§10.4）', () => {
+    const spy = makeApi();
+    // 详情图里放一张明显过窄的：它会被 detailMinWidth 过滤掉，不该算进「下载 N 个」
+    const withNarrow = snapshot({
+      assets: [
+        ...snapshot().assets,
+        {
+          key: 'detail-narrow',
+          kind: 'detail',
+          index: 99,
+          candidates: ['https://img.pddpic.com/narrow.jpg'],
+          width: 50,
+        },
+      ],
+    });
+    renderPanel(spy, withNarrow);
+    // 快照 35 条，但计划只有 34 条（窄图被过滤）
+    expect(screen.queryByRole('button', { name: '下载 35 个文件' })).toBeNull();
+    expect(screen.getByRole('button', { name: /下载 34 个文件/ })).toBeInTheDocument();
   });
 
   it('挑选模式：主按钮变成“下载所选 N 个”，提交的是选中的 key', () => {
@@ -237,6 +257,38 @@ describe('MediaDownloadPanel 组装（§8.6）', () => {
     expect(within(primaryGroup).getByRole('progressbar')).toBeInTheDocument();
     fireEvent.click(within(primaryGroup).getByRole('button', { name: '取消' }));
     expect(spy.cancelJob).toHaveBeenCalledWith('job-1');
+  });
+
+  it('提交失败时面板显示可见的错误行，而不是静默（§10.4）', async () => {
+    const spy = makeApi();
+    spy.submitJob.mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'INTERNAL' }));
+    renderPanel(spy);
+    fireEvent.click(screen.getByRole('button', { name: /下载 34 个文件/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('提交下载失败');
+  });
+
+  it('目录未授权时点下载：进入「等待选择文件夹」态并禁用按钮（§10.4 第 9 行）', async () => {
+    const spy = makeApi();
+    spy.submitJob.mockResolvedValueOnce({ waiting: 'dir' } as SubmitResultLike);
+    renderPanel(spy, snapshot(), 'ready', { status: 'unset' });
+    // unset 状态下主按钮先要求选择目录
+    fireEvent.click(screen.getByRole('button', { name: '选择保存位置并下载' }));
+    expect(spy.openGrant).toHaveBeenCalled();
+  });
+
+  it('重试失败项失效时，明确告诉用户而不是静默整单重提（C10）', async () => {
+    const spy = makeApi();
+    spy.retryJob.mockResolvedValueOnce(undefined as never);
+    renderPanel(spy, snapshot(), 'ready', { status: 'ready', name: '电商素材' });
+    act(() =>
+      spy.pushJob(makeJob({ status: 'failed', failed: [{ itemKey: 'main:0', code: 'HTTP_404' }] })),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+    // 不能悄悄提交一个全新的整单任务
+    expect(spy.submitJob).not.toHaveBeenCalled();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('重新下载全部');
   });
 
   it('复制保存路径调用 api.copy（§10.5）', () => {

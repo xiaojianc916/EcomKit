@@ -7,7 +7,7 @@ import type { JobRecord } from '../kernel/jobs/types';
 import type { DirState } from '../kernel/messaging/protocol';
 import type { ProductSnapshot } from '../kernel/model/product';
 import type { GlobalSettings } from '../kernel/settings/schema';
-import { PortalRoot, TooltipProvider } from '../kernel/ui-kit';
+import { PortalRoot, ToastViewport, TooltipProvider } from '../kernel/ui-kit';
 import type { BlockerActionId } from './BlockerNotice';
 import { pickActiveFeature } from './FeatureTabs';
 import { Handle } from './Handle';
@@ -146,6 +146,8 @@ export function Shell(props: ShellProps) {
   const rootStyle = themeValue === undefined ? undefined : ({ colorScheme: themeValue } as const);
 
   return (
+    // PortalRoot 必须在外层：内层再包一层 value=undefined 会把 shadow root 覆盖成 null，
+    // 于是 Tooltip / Toast 全部挂到 document.body，拿不到 Shadow DOM 里的样式。
     <PortalRoot {...(portalContainer === undefined ? {} : { value: portalContainer })}>
       <TooltipProvider>
         <LiveRegionProvider>
@@ -189,6 +191,13 @@ export function Shell(props: ShellProps) {
                 {effectiveFeature === null ? null : renderFeature(effectiveFeature, { dir, job })}
               </Panel>
             ) : null}
+
+            {/*
+              Toast 的落点。旧实现只在别处 new 了一个 ToastViewport，外壳从来没渲染它，
+              于是 PageApi.toast("请在弹出的小窗中选择保存位置") 这类兜底提示全部石沉大海 ——
+              这也是「点了下载完全没反应」的一部分：失败原因根本没地方显示。
+            */}
+            <ToastViewport />
           </div>
         </LiveRegionProvider>
       </TooltipProvider>

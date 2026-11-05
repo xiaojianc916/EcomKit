@@ -21,3 +21,6 @@ blob-report/
 
 # 临时探针产物
 scripts/phase0/fsa-probe/
+.tmp-*
+*.patch
+__scratch-*

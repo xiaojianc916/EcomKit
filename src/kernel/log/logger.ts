@@ -40,6 +40,10 @@ export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
 }
 
+export function getLogLevel(): LogLevel {
+  return currentLevel;
+}
+
 function emit(level: LogLevel, scope: string, msg: string, data?: unknown): void {
   if (LEVEL_ORDER[level] < LEVEL_ORDER[currentLevel]) return;
   const entry: LogEntry = { at: Date.now(), level, scope, msg };

@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { getSettings, setSettings } from '../../kernel/settings/store';
+import { type ComponentType, useEffect, useMemo, useState } from 'react';
+import {
+  DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+  MediaDownloadSettings,
+} from '../../features/media-download/settings';
+import { pageFeatures } from '../../features/registry.page';
+import { sendMessage } from '../../kernel/messaging/runtime';
 import type { GlobalSettings } from '../../kernel/settings/schema';
 import { templateHasId } from '../../kernel/settings/schema';
+import { featureSettings, getSettings, setSettings } from '../../kernel/settings/store';
 
 /**
  * 设置页（方案 §10.8、§11）：左侧导航 + 内容区最大 720px。
@@ -38,7 +44,9 @@ export function OptionsApp() {
   if (!settings) {
     return (
       <div className="opt">
-        <main className="opt__main"><p className="opt__desc">正在读取设置…</p></main>
+        <main className="opt__main">
+          <p className="opt__desc">正在读取设置…</p>
+        </main>
       </div>
     );
   }
@@ -73,7 +81,13 @@ export function OptionsApp() {
 
 /* ---------------- 各分组 ---------------- */
 
-function SaveSection({ settings, update }: { settings: GlobalSettings; update: (p: Partial<GlobalSettings>) => void }) {
+function SaveSection({
+  settings,
+  update,
+}: {
+  settings: GlobalSettings;
+  update: (p: Partial<GlobalSettings>) => void;
+}) {
   return (
     <>
       <h1 className="opt__h">保存位置</h1>
@@ -84,7 +98,9 @@ function SaveSection({ settings, update }: { settings: GlobalSettings; update: (
         <select
           className="opt__select"
           value={settings.save.mode}
-          onChange={(e) => update({ save: { ...settings.save, mode: e.target.value as 'fsa' | 'downloads' } })}
+          onChange={(e) =>
+            update({ save: { ...settings.save, mode: e.target.value as 'fsa' | 'downloads' } })
+          }
         >
           <option value="fsa">自选文件夹（推荐）</option>
           <option value="downloads">浏览器下载目录</option>
@@ -120,18 +136,18 @@ function NamingSection() {
   return (
     <>
       <h1 className="opt__h">文件命名</h1>
-      <p className="opt__desc">
-        商品文件夹名由模板生成，模板里必须包含 {'{id}'}。
-      </p>
+      <p className="opt__desc">商品文件夹名由模板生成，模板里必须包含 {'{id}'}。</p>
       <div className="opt__field">
         <span className="opt__label">商品文件夹模板</span>
-        <input className="opt__input" value={template} onChange={(e) => setTemplate(e.target.value)} />
+        <input
+          className="opt__input"
+          value={template}
+          onChange={(e) => setTemplate(e.target.value)}
+        />
         {valid ? null : (
           <span className="opt__err">模板缺少 {'{id}'}，无法按商品 ID 定位文件夹</span>
         )}
-        <span className="opt__hint">
-          可用变量：{'{platform} {shop:N} {title:N} {id} {date}'}
-        </span>
+        <span className="opt__hint">可用变量：{'{platform} {shop:N} {title:N} {id} {date}'}</span>
       </div>
       <div className="opt__field">
         <span className="opt__label">预览</span>
@@ -141,19 +157,79 @@ function NamingSection() {
   );
 }
 
+/**
+ * 「素材」分组：直接渲染功能自己的 SettingsSection（§8.5 插槽）。
+ *
+ * 旧实现这里只有一段说明文字，`PageFeature.SettingsSection` 全仓库无人使用 ——
+ * 于是「转 JPG / 生成商品信息.txt / 视频封面 / 详情图最小宽度 / 子文件夹名」
+ * 这些设置项**在界面上根本没有入口**，用户只能接受默认值。
+ */
 function MediaSection() {
+  type SectionProps = {
+    value: MediaDownloadSettings;
+    onChange(next: MediaDownloadSettings): void;
+  };
+  const [Section, setSection] = useState<ComponentType<SectionProps> | null>(null);
+  const [value, setValue] = useState<MediaDownloadSettings>(DEFAULT_MEDIA_DOWNLOAD_SETTINGS);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const feature = pageFeatures.find((f) => f.manifest.id === 'media-download');
+      if (!feature?.page) return;
+      const mod = await feature.page.load();
+      if (alive && mod.default.SettingsSection) {
+        setSection(() => mod.default.SettingsSection as ComponentType<SectionProps>);
+      }
+      const current = await featureSettings({
+        featureId: 'media-download',
+        schema: MediaDownloadSettings,
+        defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+      }).get();
+      if (alive) setValue(current);
+    })().catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const onChange = (next: MediaDownloadSettings): void => {
+    setValue(next);
+    void featureSettings({
+      featureId: 'media-download',
+      schema: MediaDownloadSettings,
+      defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+    })
+      .set(next)
+      .then(() => {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 1500);
+      })
+      .catch(() => {});
+  };
+
   return (
     <>
       <h1 className="opt__h">素材</h1>
-      <p className="opt__desc">这些设置针对「素材下载」功能，保存在该功能自己的配置里。</p>
-      <p className="opt__hint">
-        可配置项：WebP / AVIF 转成 JPG、生成商品信息.txt、同时下载视频封面、详情图最小宽度、默认勾选的类别。
-      </p>
+      <p className="opt__desc">这些设置针对「素材下载」功能，改动立即生效。</p>
+      {Section === null ? (
+        <p className="opt__desc">正在读取素材设置…</p>
+      ) : (
+        <Section value={value} onChange={onChange} />
+      )}
+      {saved ? <p className="opt__hint">已保存</p> : null}
     </>
   );
 }
 
-function ShellSection({ settings, update }: { settings: GlobalSettings; update: (p: Partial<GlobalSettings>) => void }) {
+function ShellSection({
+  settings,
+  update,
+}: {
+  settings: GlobalSettings;
+  update: (p: Partial<GlobalSettings>) => void;
+}) {
   return (
     <>
       <h1 className="opt__h">工具箱</h1>
@@ -165,7 +241,10 @@ function ShellSection({ settings, update }: { settings: GlobalSettings; update: 
           value={settings.shell.autoOpen}
           onChange={(e) =>
             update({
-              shell: { ...settings.shell, autoOpen: e.target.value as 'panel' | 'handle' | 'hidden' },
+              shell: {
+                ...settings.shell,
+                autoOpen: e.target.value as 'panel' | 'handle' | 'hidden',
+              },
             })
           }
         >
@@ -180,7 +259,9 @@ function ShellSection({ settings, update }: { settings: GlobalSettings; update: 
           className="opt__select"
           value={settings.shell.theme}
           onChange={(e) =>
-            update({ shell: { ...settings.shell, theme: e.target.value as 'system' | 'light' | 'dark' } })
+            update({
+              shell: { ...settings.shell, theme: e.target.value as 'system' | 'light' | 'dark' },
+            })
           }
         >
           <option value="system">跟随系统</option>
@@ -192,7 +273,13 @@ function ShellSection({ settings, update }: { settings: GlobalSettings; update: 
   );
 }
 
-function AdvancedSection({ settings, update }: { settings: GlobalSettings; update: (p: Partial<GlobalSettings>) => void }) {
+function AdvancedSection({
+  settings,
+  update,
+}: {
+  settings: GlobalSettings;
+  update: (p: Partial<GlobalSettings>) => void;
+}) {
   return (
     <>
       <h1 className="opt__h">高级</h1>
@@ -212,16 +299,47 @@ function AdvancedSection({ settings, update }: { settings: GlobalSettings; updat
         />
         <span className="opt__hint">同时下载的文件数，1 到 8，默认 6。</span>
       </div>
-      <label className="opt__check">
-        <input
-          type="checkbox"
-          checked={settings.debug}
-          onChange={(e) => update({ debug: e.target.checked })}
-        />
-        调试模式（面板里显示数据来源）
-      </label>
+      <div className="opt__field">
+        <span className="opt__label">诊断</span>
+        <button
+          type="button"
+          className="opt__select"
+          onClick={() => {
+            void exportDiagnostics();
+          }}
+        >
+          导出诊断文件
+        </button>
+        <span className="opt__hint">
+          识别不出来或下载失败时导出这个文件回传。里面只有日志、任务状态和结构骨架， 不含
+          Cookie、完整链接和商品内容。
+        </span>
+      </div>
+      <div className="opt__check" style={{ cursor: 'default' }}>
+        <span className="opt__hint">
+          提示：保存方式、根目录、文件命名、素材选项都在左侧对应分组里，改动立即生效。
+        </span>
+      </div>
     </>
   );
+}
+
+/** 导出诊断包（§6.7）。后台组装 JSON，这里落成文件。 */
+async function exportDiagnostics(): Promise<void> {
+  try {
+    const res = (await sendMessage('shell.diagnostics')) as { json?: string } | undefined;
+    if (!res?.json) return;
+    const blob = new Blob([res.json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `ecbox-diagnostics-${stamp}.json`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch {
+    // 导出失败不阻塞设置页
+  }
 }
 
 function AboutSection() {
@@ -235,8 +353,12 @@ function AboutSection() {
       </div>
       <div className="opt__field">
         <span className="opt__label">快捷键</span>
-        <span className="opt__hint">Alt+Shift+E 展开或收起工具箱　·　Alt+Shift+D 下载勾选的素材</span>
-        <span className="opt__hint">可在 chrome://extensions/shortcuts 或 edge://extensions/shortcuts 修改。</span>
+        <span className="opt__hint">
+          Alt+Shift+E 展开或收起工具箱　·　Alt+Shift+D 下载勾选的素材
+        </span>
+        <span className="opt__hint">
+          可在 chrome://extensions/shortcuts 或 edge://extensions/shortcuts 修改。
+        </span>
       </div>
     </>
   );
@@ -253,7 +375,11 @@ function renderPreview(template: string): string {
   };
   const folder = template.replace(/\{(\w+)(?::(\d+))?\}/g, (_m, key: string, len?: string) => {
     const v = sample[key] ?? `{${key}}`;
-    return len ? Array.from(new Intl.Segmenter().segment(v), (s) => s.segment).slice(0, Number(len)).join('') : v;
+    return len
+      ? Array.from(new Intl.Segmenter().segment(v), (s) => s.segment)
+          .slice(0, Number(len))
+          .join('')
+      : v;
   });
   return `电商素材 ･ 拼多多 ･ ${folder}`;
 }

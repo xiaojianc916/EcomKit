@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BRIDGE_CHANNEL_ATTR, bridgeEvent, publishBridgePrefix } from '../../kernel/messaging/page-bridge';
+import {
+  BRIDGE_CHANNEL_ATTR,
+  bridgeEvent,
+  publishBridgePrefix,
+} from '../../kernel/messaging/page-bridge';
 import type { PlatformManifest } from '../../platforms/types';
 
 const manifest = {

@@ -1,5 +1,5 @@
-import type { FeatureManifest, EngineFeature, RegisteredFeature } from './types';
 import type { JobTypeDef } from '../kernel/jobs/types';
+import type { EngineFeature, FeatureManifest, RegisteredFeature } from './types';
 
 const manifestModules = import.meta.glob<{ default: FeatureManifest }>('./*/manifest.ts', {
   eager: true,

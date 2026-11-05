@@ -9,13 +9,13 @@
  *   2. 把外壳查好的 dir / job 透传给功能（§9.4：目录状态只查一次）
  *   3. 拼出 PageApi 需要的最小上下文
  */
-import { Component, Suspense, useEffect, useState, type ReactNode } from 'react';
+import { Component, type ReactNode, Suspense, useEffect, useState } from 'react';
 import type { PageApi, RegisteredFeature } from '../../features/types';
 import type { DirState } from '../../kernel/fs/types';
 import type { JobRecord } from '../../kernel/jobs/types';
-import type { ProductSnapshot } from '../../kernel/model/product';
 import { createLogger } from '../../kernel/log/logger';
-import { createFeatureSettings } from '../../kernel/settings/store';
+import type { ProductSnapshot } from '../../kernel/model/product';
+import { createFeatureSettings, getSettings } from '../../kernel/settings/store';
 
 const log = createLogger('feature-slot');
 
@@ -88,15 +88,28 @@ function useFeatureSettings(feature: RegisteredFeature): unknown {
 export function FeatureSlot(props: FeatureSlotProps) {
   const { feature, snapshot, status, dir, job, api } = props;
   const settings = useFeatureSettings(feature);
-  const [loaded, setLoaded] = useState<{ default: import('../../features/types').PageFeature } | null>(
-    null,
-  );
+  // 根目录绝对路径来自全局设置（§10.5 复制完整路径）；读不到就不传，SaveBar 会退回相对路径
+  const [rootPath, setRootPath] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    void getSettings()
+      .then((s) => {
+        if (alive && s.save.rootPath.trim() !== '') setRootPath(s.save.rootPath.trim());
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const [loaded, setLoaded] = useState<{
+    default: import('../../features/types').PageFeature;
+  } | null>(null);
 
   useEffect(() => {
     if (!feature.page) return;
     let alive = true;
-    void feature
-      .page.load()
+    void feature.page
+      .load()
       .then((mod) => {
         if (alive) setLoaded(mod);
       })
@@ -115,7 +128,6 @@ export function FeatureSlot(props: FeatureSlotProps) {
 
   const Panel = loaded.default.Panel;
 
-
   return (
     <FeatureErrorBoundary>
       <div data-ecbox-feature={feature.manifest.id}>
@@ -127,6 +139,7 @@ export function FeatureSlot(props: FeatureSlotProps) {
             api={api}
             dir={dir}
             job={job}
+            {...(rootPath === undefined ? {} : { rootPath })}
           />
         </Suspense>
       </div>

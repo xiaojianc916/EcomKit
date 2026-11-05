@@ -124,8 +124,17 @@ export function deepScanPdd(root: unknown, opts: PddDeepScanOptions): PddDeepSca
     }
   }
 
-  // 主图：主图类路径里图片最多的那一组；没有就退到「未分类」里最多的一组
-  const bestMain = pickLargest(mainHits) ?? (detailHits.length === 0 ? pickLargest(otherHits) : undefined);
+  /**
+   * 主图：主图类路径里图片最多的那一组；没有就退到「未分类」里最多的一组。
+   *
+   * **但绝不能退到详情图里**：真实抓包里没有 topGallery 时，19 张详情图会落进
+   * 「未分类」桶，退回 picks 之后主图=详情图 —— 用户看到「主图 19 张、详情图 0 张」，
+   * 下载出来的目录结构全错。所以只要 unclassified 的路径明明写着 detail/desc，
+   * 就不许它当主图。
+   */
+  const usableOthers = otherHits.filter((hit) => !DETAIL_RE.test(hit.path.toLowerCase()));
+  const bestMain =
+    pickLargest(mainHits) ?? (detailHits.length === 0 ? pickLargest(usableOthers) : undefined);
   if (bestMain) {
     result.main = bestMain.images;
     result.paths.main = bestMain.path;

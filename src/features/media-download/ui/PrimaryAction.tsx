@@ -17,10 +17,22 @@ export interface PrimaryActionProps {
   onAction(action: PrimaryAction): void;
   /** 进度态下由上层传进来的任务体积，用于 aria 文案 */
   bytes?: number;
+  /** 正在等 bg 回话：按钮变「正在提交…」，让点击有可见反馈 */
+  submitting?: boolean;
+  /** 提交失败的一句话原因；非空时显示在主按钮下方，绝不静默 */
+  errorText?: string | null;
 }
 
-export function PrimaryActionView({ model, onAction, bytes }: PrimaryActionProps) {
-  const { label, variant, disabled, progress, secondary, meta, metaAction } = model;
+export function PrimaryActionView({
+  model,
+  onAction,
+  bytes,
+  submitting = false,
+  errorText = null,
+}: PrimaryActionProps) {
+  const { variant, disabled, progress, secondary, meta, metaAction } = model;
+  // 提交中：保留原文案的语义，但明确告诉用户「已经收到了，正在处理」
+  const label = submitting && variant !== 'progress' ? '正在提交…' : model.label;
 
   const isProgress = variant === 'progress' && progress !== null;
 
@@ -47,12 +59,17 @@ export function PrimaryActionView({ model, onAction, bytes }: PrimaryActionProps
               label={label}
             />
           </div>
+          {/*
+            体积已经拼在 label 里（primaryActionModel 的「下载中 6/24 · 2 MB」），
+            这里再拼一次会显示成「… · 2 MB · 2 MB」。只补 label 里没有体积的情况。
+          */}
           <span
             className="ec-num"
             style={{ fontSize: 13, color: 'var(--ec-text)', whiteSpace: 'nowrap' }}
           >
-            {label}
-            {bytes !== undefined ? ` · ${formatBytes(bytes)}` : ''}
+            {bytes !== undefined && !label.includes(formatBytes(bytes))
+              ? `${label} · ${formatBytes(bytes)}`
+              : label}
           </span>
           {secondary === null ? null : (
             <button
@@ -69,7 +86,7 @@ export function PrimaryActionView({ model, onAction, bytes }: PrimaryActionProps
           <button
             type="button"
             // 只有真正的操作按钮；禁用时确实不可点
-            disabled={disabled}
+            disabled={disabled || submitting}
             onClick={() => onAction(model.action)}
             className={`ec-btn ${variant === 'accent' ? 'ec-btn--primary' : 'ec-btn--neutral'}`}
             style={{ flex: 1, width: '100%' }}
@@ -85,6 +102,24 @@ export function PrimaryActionView({ model, onAction, bytes }: PrimaryActionProps
               {secondary.label}
             </button>
           )}
+        </div>
+      )}
+
+      {/* 提交失败：单独一行、红字，保证「点了没反应」绝不发生 */}
+      {errorText === null ? null : (
+        <div
+          role="alert"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            marginTop: 6,
+            fontSize: 12,
+            lineHeight: '16px',
+            color: 'var(--ec-danger)',
+          }}
+        >
+          {errorText}
         </div>
       )}
 

@@ -16,27 +16,36 @@
  */
 import { createElement } from 'react';
 import type { ContentScriptContext } from 'wxt/utils/content-script-context';
+import { featuresForPlatform, pageFeatures } from '../../features/registry.page';
+import type { PageApi, QuickAction, RegisteredFeature } from '../../features/types';
 import type { ErrorCode } from '../../kernel/errors/codes';
+import { EcError } from '../../kernel/errors/ec-error';
 import type { DirState } from '../../kernel/fs/types';
 import type { JobRecord } from '../../kernel/jobs/types';
-import type { ProductDraft, ProductSnapshot } from '../../kernel/model/product';
-import type { PortMessage, TabState } from '../../kernel/messaging/protocol';
-import type { PageApi, RegisteredFeature } from '../../features/types';
-import type { ShellProps } from '../../shell/Shell';
-import { EcError } from '../../kernel/errors/ec-error';
 import { createLogger } from '../../kernel/log/logger';
-import { findPageKind } from '../../platforms/registry';
-import { getPlatformResolver } from '../../platforms/registry.resolver';
-import type { CapturedPayload, PlatformManifest } from '../../platforms/types';
-import { DraftAccumulator } from '../../platforms/shared/merge';
-import { PLATFORM_MANIFESTS } from '../../platforms/registry';
 import { connectJobPort } from '../../kernel/messaging/port';
+import type { PortMessage, TabState } from '../../kernel/messaging/protocol';
 import { sendMessage } from '../../kernel/messaging/runtime';
-import { readSettings, watchSettings } from '../../kernel/settings/store';
-import { pageFeatures, featuresForPlatform } from '../../features/registry.page';
-import { createShellStore, HANDLE_DONE_TTL_MS, siteKeyOf, type ShellStore } from '../../shell/store';
+import type { ProductDraft, ProductSnapshot } from '../../kernel/model/product';
 import type { AutoOpenMode, ThemeMode } from '../../kernel/settings/schema';
+import {
+  patchUiPrefs,
+  readSettings,
+  readUiPrefs,
+  watchSettings,
+} from '../../kernel/settings/store';
+import { findPageKind, PLATFORM_MANIFESTS } from '../../platforms/registry';
+import { getPlatformResolver } from '../../platforms/registry.resolver';
+import type { DraftAccumulator } from '../../platforms/shared/merge';
+import type { CapturedPayload, PlatformManifest } from '../../platforms/types';
+import type { ShellProps } from '../../shell/Shell';
 import type { PrefsPort } from '../../shell/store';
+import {
+  createShellStore,
+  HANDLE_DONE_TTL_MS,
+  type ShellStore,
+  siteKeyOf,
+} from '../../shell/store';
 import { createPageBridge, type PageBridge } from './bridge-client';
 import { FeatureSlot } from './FeatureSlot';
 import { resolveSnapshot } from './resolver-runner';
@@ -65,6 +74,13 @@ export interface PageController {
   subscribe(listener: () => void): () => void;
   /** 每次 notify 自增，useSyncExternalStore 的 getSnapshot */
   getVersion(): number;
+  /**
+   * 处理来自 bg / popup / 快捷键的命令（§10.5）。
+   *
+   * 旧实现里 bg 会发 `ecbox:command`，但内容脚本从来没监听 —— 于是 Alt+Shift+D
+   * 和 popup 里的「下载」按钮全都是死键：按下去什么都不发生，也没有任何提示。
+   */
+  handleCommand(command: string, api: PageApi): Promise<void>;
 }
 
 export function createPageController(ctx: ContentScriptContext): PageController {
@@ -84,7 +100,10 @@ export function createPageController(ctx: ContentScriptContext): PageController 
   let bridge: PageBridge | null = null;
   let disconnectPort: (() => void) | null = null;
   let store: ShellStore | null = null;
-  let uiSettings: { autoOpen: AutoOpenMode; theme: ThemeMode } = { autoOpen: 'panel', theme: 'system' };
+  let uiSettings: { autoOpen: AutoOpenMode; theme: ThemeMode } = {
+    autoOpen: 'panel',
+    theme: 'system',
+  };
   /** 本商品是否已经按 §10.5 决定过形态：只决定一次，之后尊重用户手动收起/展开 */
   let formDecided = false;
   let version = 0;
@@ -93,19 +112,52 @@ export function createPageController(ctx: ContentScriptContext): PageController 
   let uiPrefs: Record<string, 'hidden' | 'handle' | 'panel'> = {};
   let handleYPrefs: Record<string, number> = {};
 
+  /**
+   * 站点偏好的读写端口（§10.2「按站点记住」）。
+   *
+   * **必须落盘**：旧实现只写了内存对象，页面一刷新「把手位置、要不要展开、上次勾了哪几类」
+   * 全部回到默认值 —— 用户感觉工具箱「记不住东西」。
+   * 写入做 300ms 防抖，拖动把手时不会每移动一像素就写一次 storage。
+   */
   const prefs: PrefsPort = {
     get<T>(key: string): T | undefined {
-      const saved = uiPrefs[key];
-      if (saved === undefined) return undefined;
-      return { form: saved, handleY: handleYPrefs[key] } as T;
+      const form = uiPrefs[key];
+      const handleY = handleYPrefs[key];
+      if (form === undefined && handleY === undefined) return undefined;
+      return { form, handleY } as T;
     },
     set<T>(key: string, value: T): void {
       const v = value as { form?: 'hidden' | 'handle' | 'panel'; handleY?: number };
       if (v.form) uiPrefs = { ...uiPrefs, [key]: v.form };
       if (typeof v.handleY === 'number') handleYPrefs = { ...handleYPrefs, [key]: v.handleY };
-      // 站点偏好落盘由 shell 的 onFormChange 触发，这里只保内存，避免每次拖动都写 storage
+      schedulePrefsFlush();
     },
   };
+
+  let prefsFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  function schedulePrefsFlush(): void {
+    if (prefsFlushTimer !== null) return;
+    prefsFlushTimer = setTimeout(() => {
+      prefsFlushTimer = null;
+      void patchUiPrefs({
+        formByPlatform: { ...uiPrefs },
+        handleYByPlatform: { ...handleYPrefs },
+      }).catch(() => {});
+    }, 300);
+  }
+
+  /** 启动时读回站点偏好；读失败就用默认值，不影响识别 */
+  async function loadPrefs(): Promise<void> {
+    try {
+      const saved = await readUiPrefs();
+      uiPrefs = { ...(saved.formByPlatform as typeof uiPrefs | undefined) };
+      handleYPrefs = {
+        ...(saved.handleYByPlatform as typeof handleYPrefs | undefined),
+      };
+    } catch {
+      // 读不到就用默认
+    }
+  }
 
   /**
    * 整页只有**一个** shell store。旧实现在 start() 读完设置后又 new 了一个替换掉，
@@ -187,6 +239,10 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     const sameProduct =
       match !== null && match.productId === hit.productId && match.pageKind === hit.kind;
     if (sameProduct) return;
+
+    // 换商品：上一条任务的进度/失败属于上一个商品，必须先清掉，
+    // 否则面板会带着旧商品的「下载中 10/24」进入新页面（§7.2 第 1 点）。
+    job = null;
 
     // 新商品：丢弃上一轮会话（§7.2 第 1 点）
     abort?.abort();
@@ -287,7 +343,11 @@ export function createPageController(ctx: ContentScriptContext): PageController 
         sources: result.sources,
       };
       if (result.snapshot) log.info('resolve done', summary);
-      else log.warn('resolve done：没有拿到任何素材（PARSE_EMPTY），上面的 SSR / DOM 日志是各数据源的结果', summary);
+      else
+        log.warn(
+          'resolve done：没有拿到任何素材（PARSE_EMPTY），上面的 SSR / DOM 日志是各数据源的结果',
+          summary,
+        );
     } catch (e) {
       if (localAbort.signal.aborted) return;
       const code = EcError.from(e).code;
@@ -309,6 +369,87 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     return dir;
   }
 
+  /**
+   * 命令分发。页面知道当前快照，所以下载类命令只能在这里落地：
+   * `download-checked` = 下载全部勾选的类别，`download-main` / `-sku` / `-detail` / `-video` = 只下这一类。
+   *
+   * 命令没有对应动作时必须给出**可见反馈**（Toast），否则用户按了快捷键毫无反应，
+   * 会以为扩展坏了。
+   */
+  async function handleCommand(command: string, api: PageApi): Promise<void> {
+    if (!match || !snapshot) {
+      api.toast('这个页面还没有识别出商品，先等识别完成');
+      return;
+    }
+    const actions = await loadQuickActions(snapshot);
+    const kind = command.startsWith('download-') ? command.slice('download-'.length) : command;
+    // download-kinds:main,detail —— popup 上用户勾了哪几类就只下哪几类
+    if (kind.startsWith('kinds:')) {
+      const kinds = kind
+        .slice('kinds:'.length)
+        .split(',')
+        .filter((k) => k !== '');
+      if (kinds.length === 0) {
+        api.toast('没有勾选任何素材');
+        return;
+      }
+      const hits = kinds
+        .map((k) => actions.find((a) => a.id === `media-download.${k}`))
+        .filter((a): a is QuickAction => a !== undefined);
+      if (hits.length === 0) {
+        api.toast('没有可下载的素材');
+        return;
+      }
+      for (const action of hits) action.run(api);
+      return;
+    }
+    const byKind = actions.find((a) => a.id === `media-download.${kind}`);
+    const all = actions.find((a) => a.id === 'media-download.all');
+    const hit = kind === 'checked' || kind === 'all' ? all : byKind;
+    if (!hit) {
+      log.info('command ignored: no action', { command });
+      api.toast('没有可下载的素材');
+      return;
+    }
+    hit.run(api);
+  }
+
+  /**
+   * 导出诊断包（§6.7）。面板上所有「导出诊断」按钮都走这里。
+   *
+   * 旧实现里按钮点了什么都不发生 —— onBlockerAction 根本没有 diagnostics 分支。
+   * 现在把 bg 组装的 JSON 存成本地文件，用户可以直接回传。
+   */
+  async function exportDiagnostics(): Promise<void> {
+    try {
+      const res = (await sendMessage('shell.diagnostics')) as { json: string } | undefined;
+      if (!res?.json) return;
+      const blob = new Blob([res.json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `ecbox-diagnostics-${stamp}.json`;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) {
+      log.warn('导出诊断失败', e);
+    }
+  }
+
+  /** 懒加载功能页模块，取它的 quickActions */
+  async function loadQuickActions(snap: ProductSnapshot): Promise<QuickAction[]> {
+    const feature = pageFeatures.find((f) => f.manifest.id === 'media-download');
+    if (!feature?.page) return [];
+    try {
+      const mod = await feature.page.load();
+      return mod.default.quickActions?.(snap) ?? [];
+    } catch (e) {
+      log.warn('quickActions load failed', e);
+      return [];
+    }
+  }
+
   function scheduleEvaluate(): void {
     if (routeTimer) clearTimeout(routeTimer);
     routeTimer = setTimeout(() => {
@@ -319,6 +460,15 @@ export function createPageController(ctx: ContentScriptContext): PageController 
 
   return {
     start() {
+      // 先把站点偏好读回来，再建 store，否则第一次渲染用的是默认形态
+      void loadPrefs().then(() => {
+        const saved = prefs.get<{ form?: 'hidden' | 'handle' | 'panel'; handleY?: number }>(
+          siteKeyOf(location.hostname),
+        );
+        if (saved?.handleY !== undefined) {
+          ensureStore().getState().setHandleY(saved.handleY);
+        }
+      });
       ensureStore();
       void (async () => {
         try {
@@ -409,10 +559,10 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     getVersion: () => version,
     current: () => match,
     snapshot: () => snapshot,
+    handleCommand,
     refreshDir,
     dirState: () => dir,
-    captures: (ruleId: string) =>
-      bridge ? bridge.captures(ruleId) : emptyCaptures(),
+    captures: (ruleId: string) => (bridge ? bridge.captures(ruleId) : emptyCaptures()),
 
     shellProps(api: PageApi): ShellProps {
       const platformId = match?.platform ?? '';
@@ -452,6 +602,12 @@ export function createPageController(ctx: ContentScriptContext): PageController 
           else if (action === 'grant') void sendMessage('fs.openGrant', { reason: 'unset' });
           else if (action === 'reset-grant') void sendMessage('fs.openGrant', { reason: 'gone' });
           else if (action === 'retry') void evaluate();
+          else if (action === 'settings') void sendMessage('shell.openOptions');
+          else if (action === 'mobile-mode') {
+            // Phase 0 已证否：两个平台改 UA 都拿不到数据（docs/phase0/FINDINGS.md §1），
+            // 所以这里不假装能切，只给一句话说明。
+            log.info('mobile-mode requested but unsupported');
+          } else if (action === 'diagnostics') void exportDiagnostics();
         },
         onRescan() {
           match = null;

@@ -57,7 +57,16 @@ const OFFSCREEN_ONLY = new Set<string>([
   'engine.call',
   'engine.event',
   'engine.ready',
+  // offscreen 反向问 bg 要设置（它自己读不了 chrome.storage）
+  'engine.settings',
+  // offscreen 把引擎日志转发给 bg（诊断包的数据源）
+  'engine.log',
+  // offscreen 借用 bg 的 chrome.downloads（offscreen 自己没有这个 API）
+  'engine.download',
 ]);
+
+/** 只允许 bg 自己发的（bg → offscreen 的单向通知） */
+const BACKGROUND_ONLY = new Set<string>(['engine.settingsChanged']);
 
 export type SenderKind = 'content' | 'extension-page' | 'offscreen' | 'background' | 'unknown';
 
@@ -87,6 +96,12 @@ export function guardSender(
   sender: chrome.runtime.MessageSender,
 ): SenderCheckResult {
   const kind = classifySender(sender);
+
+  if (BACKGROUND_ONLY.has(method)) {
+    return kind === 'background'
+      ? { ok: true }
+      : { ok: false, reason: `${method} only accepts background sender` };
+  }
 
   if (OFFSCREEN_ONLY.has(method)) {
     // bg → offscreen 的消息没有 sender.tab，且 sender.url 是 offscreen.html
@@ -140,7 +155,7 @@ const FeatureCallSchema = z.object({
   args: z.unknown(),
 });
 const EngineEnqueueSchema = z.object({ job: z.unknown(), payload: z.unknown() });
-const PersistHandleSchema = z.object({ handle: z.unknown() });
+const _PersistHandleSchema = z.object({ handle: z.unknown() });
 
 /**
  * 每个方法的 payload 校验器。表里没有的方法不校验（都是无参的）。

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EcError } from '../../kernel/errors/ec-error';
+import { loadRootHandle, saveRootHandle } from '../../kernel/fs/handle-store';
 import type { DirState } from '../../kernel/fs/types';
 import { sendMessage } from '../../kernel/messaging/runtime';
-import { loadRootHandle, saveRootHandle } from '../../kernel/fs/handle-store';
 
 /**
  * 授权小窗（方案 §9.4）。
@@ -45,7 +45,10 @@ export function GrantApp() {
   const finish = useCallback(async (state: DirState) => {
     setDone(state);
     try {
-      await Promise.race([sendMessage('fs.changed', state), new Promise((r) => setTimeout(r, 600))]);
+      await Promise.race([
+        sendMessage('fs.changed', state),
+        new Promise((r) => setTimeout(r, 600)),
+      ]);
     } catch {
       /* 通知失败也要关窗，用户已经选完了 */
     }
@@ -160,7 +163,12 @@ export function GrantApp() {
           {busy ? '处理中…' : copy.primary}
         </button>
         {init.mode === 'needs-grant' ? (
-          <button type="button" className="grant__btn grant__btn--link" onClick={pick} disabled={busy}>
+          <button
+            type="button"
+            className="grant__btn grant__btn--link"
+            onClick={pick}
+            disabled={busy}
+          >
             改用其他文件夹
           </button>
         ) : null}

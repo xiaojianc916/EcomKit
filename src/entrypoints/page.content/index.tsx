@@ -9,21 +9,23 @@
  *
  * 它**不**直接下载文件：内容脚本处于网页源，写不了扩展源的目录（ADR-1）。
  */
-import { createShadowRootUi } from 'wxt/utils/content-script-ui/shadow-root';
-import { createRoot, type Root } from 'react-dom/client';
+
 import { createElement, useSyncExternalStore } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { createShadowRootUi } from 'wxt/utils/content-script-ui/shadow-root';
 // 面板样式：cssInjectionMode 'ui' 会把这里 import 的 CSS 注入到 Shadow Root 里。
 // 旧实现一个 CSS 都没引入 → var(--ec-*) 全部未定义，把手/面板透明、无边框，几乎看不见。
 // 只引令牌 + 组件类，不引 tailwind.css（那份带 preflight，见 ui-kit/tailwind.css 注释）。
 import '../../kernel/ui-kit/tokens.css';
 import '../../kernel/ui-kit/ui-kit.css';
+import type { PageApi } from '../../features/types';
+import { createLogger } from '../../kernel/log/logger';
+import { showToast } from '../../kernel/ui-kit';
+import { PortalRoot } from '../../kernel/ui-kit/PortalRoot';
+import { PLATFORM_MATCHES } from '../../platforms/registry';
+import { Shell } from '../../shell/Shell';
 import { createPageController, type PageController } from './controller';
 import { createPageApi } from './page-api';
-import { Shell } from '../../shell/Shell';
-import { PortalRoot } from '../../kernel/ui-kit/PortalRoot';
-import { createLogger } from '../../kernel/log/logger';
-import { PLATFORM_MATCHES } from '../../platforms/registry';
-import type { PageApi } from '../../features/types';
 
 const log = createLogger('page');
 
@@ -47,6 +49,23 @@ export default defineContentScript({
   async main(ctx) {
     const controller = createPageController(ctx);
     const api = createPageApi(controller);
+    // PageApi.toast 的落点：没有这一行，页面侧所有"告诉用户发生了什么"的提示都只是内存里的一句话
+    type ToastHandler = (msg: string, opts?: { action?: { label: string; run(): void } }) => void;
+    (api as unknown as { __setToastHandler(h: ToastHandler): void }).__setToastHandler(
+      (msg, opts) => showToast(msg, opts?.action),
+    );
+
+    // 快捷键 / popup / 工具栏命令（bg 和 popup 都用 chrome.tabs.sendMessage 发这个）。
+    // 旧实现完全没监听：Alt+Shift+D 和 popup 的「下载」都是死键。
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg?.type !== 'ecbox:command') return false;
+      const id = typeof msg.command === 'string' ? msg.command : '';
+      void controller
+        .handleCommand(id, api)
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true; // 异步应答
+    });
 
     let ui: Awaited<ReturnType<typeof createShadowRootUi>> | null = null;
     let root: Root | null = null;
@@ -64,10 +83,11 @@ export default defineContentScript({
         onMount(container, shadow) {
           root = createRoot(container);
           root.render(
-            createElement(PortalRoot, {
-              value: shadow,
-              children: createElement(ConnectedShell, { controller, api }),
-            }),
+            createElement(
+              PortalRoot,
+              { value: shadow },
+              createElement(ConnectedShell, { controller, api }),
+            ),
           );
           return root;
         },

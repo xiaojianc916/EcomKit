@@ -11,16 +11,16 @@
  *
  * 安全：MAIN 传回来的数据一律先 JSON.parse 再 Zod 校验，候选地址还要过 cdnHosts 白名单。
  */
+
+import { createLogger } from '../../kernel/log/logger';
 import {
-  bridgeEvent,
-  consumeBridgePrefix,
   type BridgeCaptureMessage,
   type BridgeHello,
   type BridgeReadGlobalResult,
+  bridgeEvent,
+  consumeBridgePrefix,
 } from '../../kernel/messaging/page-bridge';
-import type { CapturedPayload } from '../../platforms/types';
-import type { PlatformManifest } from '../../platforms/types';
-import { createLogger } from '../../kernel/log/logger';
+import type { CapturedPayload, PlatformManifest } from '../../platforms/types';
 
 const log = createLogger('page-bridge-client');
 
@@ -133,7 +133,7 @@ export function createPageBridge(manifest: PlatformManifest, pageKind: string): 
     readGlobal(path: string): Promise<unknown> {
       if (disposed) return Promise.resolve(undefined);
       return new Promise((resolve) => {
-        const id = 'r' + (++seq);
+        const id = `r${++seq}`;
         const timer = window.setTimeout(() => {
           pendingReads.delete(id);
           resolve(undefined);

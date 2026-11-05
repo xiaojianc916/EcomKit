@@ -75,7 +75,7 @@ export function AssetList(props: AssetListProps) {
           const assets = byKind[kind] ?? [];
           const selectedInKind = assets.filter((a) => selectedKeys.has(a.key)).length;
           return (
-            <li key={kind} style={{ listStyle: 'none' }}>
+            <li key={kind} aria-label={kindTitle(kind)} style={{ listStyle: 'none' }}>
               <AssetRow
                 kind={kind}
                 assets={assets}

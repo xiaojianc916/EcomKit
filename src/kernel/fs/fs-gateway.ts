@@ -3,7 +3,7 @@ import type { Logger } from '../log/logger';
 import { NAME_LIMITS, nameKey, sanitizeName } from '../naming/sanitize';
 import { createFolderIndex, type FolderIndex, folderIndex } from './folder-index';
 import { handleStore } from './handle-store';
-import type { DirEntry, FsGateway, FsSink, RelPath, WriteResult } from './types';
+import type { DirEntry, FsGateway, FsSink, RelPath, WriteFileOptions, WriteResult } from './types';
 
 /**
  * 写入网关（方案 §9.3、§9.6）。
@@ -16,6 +16,12 @@ import type { DirEntry, FsGateway, FsSink, RelPath, WriteResult } from './types'
  *   2. 索引没有（或文件夹被删/改名）→ 扫平台目录下以 `_商品ID` 结尾的文件夹，取最近修改的一个；
  *   3. 都没有 → 按模板新建，并回写索引。
  */
+
+/** 商品文件夹的定位结果（不创建目录） */
+export interface FoundFolder {
+  dir: RelPath;
+  folderName: string;
+}
 
 export interface FsGatewayOptions {
   sink: FsSink;
@@ -34,7 +40,7 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
   const index = opts.index ?? folderIndex();
   const loadRootId = opts.rootId ?? (() => handleStore().rootId());
 
-  async function requireRootId(): Promise<string> {
+  async function _requireRootId(): Promise<string> {
     const id = await loadRootId();
     if (!id) throw new EcError('DIR_UNSET');
     return id;
@@ -78,13 +84,20 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
       return sink.status();
     },
 
-    /** §9.3 商品文件夹定位 */
+    /**
+     * §9.3 商品文件夹定位。
+     *
+     * **rootId 只用于索引的命名空间，不是下载的前提**：
+     * downloads 兜底模式（§9.13）根本没有目录句柄，旧实现却一上来就 requireRootId()，
+     * 于是「改标题不新建文件夹」这条 ADR-6 的承诺在 downloads 模式下完全不成立 ——
+     * 定位抛 DIR_UNSET、调用方退回模板路径、标题一变就多一个文件夹。
+     */
     async resolveProductFolder({ platform, productId, preferredName }) {
-      const rootId = await requireRootId();
+      const rootId = await loadRootId().catch(() => null);
       const platformName = platformSegment(platform);
       const platformDir: RelPath = [platformName];
 
-      const cached = await index.get(rootId, platform, productId);
+      const cached = rootId === null ? null : await index.get(rootId, platform, productId);
       if (cached) {
         // 索引命中还要确认文件夹真的还在：用户可能手动删了它
         try {
@@ -93,7 +106,7 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
             (e) => e.kind === 'directory' && nameKey(e.name) === nameKey(cached.folderName),
           );
           if (stillThere) {
-            await index.set(rootId, platform, productId, cached.folderName);
+            if (rootId !== null) await index.set(rootId, platform, productId, cached.folderName);
             return {
               dir: [platformName, cached.folderName],
               folderName: cached.folderName,
@@ -107,15 +120,46 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
 
       const found = await scanByIdSuffix(platformDir, productId);
       if (found) {
-        await index.set(rootId, platform, productId, found);
+        if (rootId !== null) await index.set(rootId, platform, productId, found);
         return { dir: [platformName, found], folderName: found, platformDir };
       }
 
       // 步骤 3：按模板新建。模板保证带 _ID 后缀（§9.1），所以下次能被扫回来
       const folderName = sanitizeName(preferredName, { maxLength: NAME_LIMITS.folder });
       await sink.ensureDir([platformName, folderName]);
-      await index.set(rootId, platform, productId, folderName);
+      if (rootId !== null) await index.set(rootId, platform, productId, folderName);
       return { dir: [platformName, folderName], folderName, platformDir };
+    },
+
+    /**
+     * 只查不建：找这个商品已经存在的文件夹（历史/增量查询用）。
+     * 和 resolveProductFolder 共用同一套定位规则（索引 → `_ID` 后缀扫描），
+     * 但**绝不会**创建目录 —— 用户只是想看看上次下过什么，不该因此多出空文件夹。
+     */
+    async findProductFolder({ platform, productId }) {
+      const rootId = await loadRootId().catch(() => null);
+      const platformName = platformSegment(platform);
+      const platformDir: RelPath = [platformName];
+
+      if (rootId !== null) {
+        const cached = await index.get(rootId, platform, productId);
+        if (cached) {
+          try {
+            const entries = await sink.listDir(platformDir);
+            const stillThere = entries.some(
+              (e) => e.kind === 'directory' && nameKey(e.name) === nameKey(cached.folderName),
+            );
+            if (stillThere)
+              return { dir: [platformName, cached.folderName], folderName: cached.folderName };
+          } catch {
+            // 平台目录读不了 → 当作没找到
+          }
+        }
+      }
+
+      const found = await scanByIdSuffix(platformDir, productId);
+      if (found) return { dir: [platformName, found], folderName: found };
+      return null;
     },
 
     async ensurePlatformDir(platform) {
@@ -138,8 +182,9 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
       name: string,
       data: Blob | ReadableStream<Uint8Array>,
       signal: AbortSignal,
+      opts?: WriteFileOptions,
     ): Promise<WriteResult> {
-      return sink.writeFile(dir, name, data, signal);
+      return sink.writeFile(dir, name, data, signal, opts);
     },
 
     async readJson<T>(dir: RelPath, name: string): Promise<T | null> {

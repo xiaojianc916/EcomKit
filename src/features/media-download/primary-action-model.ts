@@ -293,8 +293,11 @@ export function primaryActionModel(state: PrimaryActionState): PrimaryActionMode
         const endedAt = currentJob.endedAt ?? now;
         // 完成后只显示 3 秒“已保存 N 个文件”，之后回到历史状态（§10.4）
         if (now - endedAt <= DONE_LABEL_TTL_MS) {
+          // 跳过的文件也是「已经在磁盘上了」：重复下载时 done=0、skipped=20，
+          // 只数 done 会显示「已保存 0 个文件」，看起来像什么都没做。
+          const saved = currentJob.done + currentJob.skipped;
           return {
-            label: `已保存 ${currentJob.done} 个文件`,
+            label: `已保存 ${saved} 个文件`,
             variant: 'neutral',
             disabled: true,
             action: { kind: 'none' },

@@ -29,7 +29,27 @@ export const MediaDownloadSettings = z.object({
   byPlatform: z.boolean().default(true),
   /** 商品文件夹模板，必须含 {id}（ADR-6），设置页强制校验 */
   folderTemplate: z.string().min(1).default('{title:30}_{id}'),
-  dirNames: DirNames.prefault({}),
+  /**
+   * 子文件夹名必须互不相同（大小写不敏感，Windows 就是这样）。
+   * 主图和详情图都叫「图片」时，两类文件会在同一个目录里互相让路，
+   * 出现 01.webp / 01 (2).webp 这种谁也认不出来的结果。
+   */
+  dirNames: DirNames.prefault({}).superRefine((value, ctx) => {
+    const seen = new Map<string, string>();
+    for (const [kind, name] of Object.entries(value)) {
+      const key = name.trim().toLowerCase();
+      const prev = seen.get(key);
+      if (prev !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [kind],
+          message: `子文件夹名称重复：「${name}」和「${prev}」用的同一个名字`,
+        });
+        continue;
+      }
+      seen.set(key, name);
+    }
+  }),
   onConflict: OnConflict.default('rename'),
   /** 默认勾选的类别，全局偏好（§10.3 素材行交互：勾选状态跨商品记住） */
   checkedKinds: z.array(AssetKind).default(['main', 'sku', 'detail', 'video']),

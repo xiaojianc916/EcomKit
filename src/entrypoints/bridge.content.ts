@@ -12,17 +12,18 @@
  *
  * 和 ISOLATED 的通信全部走 CustomEvent，detail 一律 JSON 字符串（§6.3）。
  */
-import { findPageKind, PLATFORM_MATCHES } from '../platforms/registry';
+
 import {
-  bridgeEvent,
-  publishBridgePrefix,
-  readPath,
-  safeJsonCopy,
   type BridgeCaptureMessage,
   type BridgeHello,
   type BridgeReadGlobalRequest,
   type BridgeReadGlobalResult,
+  bridgeEvent,
+  publishBridgePrefix,
+  readPath,
+  safeJsonCopy,
 } from '../kernel/messaging/page-bridge';
+import { findPageKind, PLATFORM_MATCHES } from '../platforms/registry';
 
 /** 交给 MAIN 的抓取规则：**可序列化**（平台 manifest 是纯数据，MAIN 自己也能读） */
 interface RuntimeCaptureRule {
@@ -71,9 +72,7 @@ function bootstrap(): void {
 
   const emit = (name: string, payload: unknown) => {
     try {
-      document.dispatchEvent(
-        new CustomEvent(name, { detail: JSON.stringify(payload) }),
-      );
+      document.dispatchEvent(new CustomEvent(name, { detail: JSON.stringify(payload) }));
     } catch {
       /* 序列化失败就丢弃，不影响页面 */
     }
@@ -229,7 +228,8 @@ function installNetworkTap(
     ): Promise<Response> {
       const promise = origFetch.call(window, input, init);
       try {
-        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
         const hit = matchRule(url);
         if (hit) {
           // 用 then 旁听，绝不改变原 promise 的行为
@@ -291,7 +291,10 @@ function installNetworkTap(
       return (origOpen as any).apply(this, [method, url, ...rest]);
     } as typeof origOpen;
 
-    XHR.prototype.send = function patchedSend(this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+    XHR.prototype.send = function patchedSend(
+      this: XMLHttpRequest,
+      body?: Document | XMLHttpRequestBodyInit | null,
+    ) {
       try {
         const url = (this as XMLHttpRequest & { __ecboxUrl?: string }).__ecboxUrl;
         if (url && matchRule(url)) {

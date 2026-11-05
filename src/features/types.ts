@@ -1,11 +1,10 @@
 import type { z } from 'zod';
-import type { JobRecord } from '../kernel/jobs/types';
-import type { ProductSnapshot, PlatformId } from '../kernel/model/product';
-import type { Capability } from '../kernel/model/capability';
-import type { DirState } from '../kernel/messaging/protocol';
-import type { JobTypeDef } from '../kernel/jobs/types';
 import type { FsGateway } from '../kernel/fs/types';
+import type { JobRecord, JobTypeDef } from '../kernel/jobs/types';
 import type { Logger } from '../kernel/log/logger';
+import type { DirState } from '../kernel/messaging/protocol';
+import type { Capability } from '../kernel/model/capability';
+import type { PlatformId, ProductSnapshot } from '../kernel/model/product';
 
 export interface QuickAction {
   id: string;
@@ -32,7 +31,11 @@ export interface SubmitResultLike {
 }
 
 export interface PageApi {
-  submitJob<P>(type: string, payload: P, opts?: { label?: string; dedupeKey?: string }): Promise<SubmitResultLike>;
+  submitJob<P>(
+    type: string,
+    payload: P,
+    opts?: { label?: string; dedupeKey?: string },
+  ): Promise<SubmitResultLike>;
   cancelJob(id: string): Promise<void>;
   retryJob(id: string, only: 'failed'): Promise<{ jobId: string }>;
   watchJobs(filter: { type: string; dedupeKey?: string }, cb: (j: JobRecord) => void): () => void;
@@ -57,6 +60,11 @@ export interface PanelProps<S = unknown> {
   dir: DirState;
   /** 本商品的当前任务（如果有），用于渲染进度态 */
   job?: JobRecord | null;
+  /**
+   * 设置里填的根目录绝对路径（可空）。浏览器只能拿到文件夹显示名，
+   * 只有这个值能让「复制路径」给出可直接粘进资源管理器的完整路径（§10.5）。
+   */
+  rootPath?: string;
 }
 
 export interface PageFeature<S = unknown> {
@@ -68,7 +76,10 @@ export interface PageFeature<S = unknown> {
 }
 
 export interface ServiceFeature {
-  methods?: Record<string, (args: unknown, sender: chrome.runtime.MessageSender) => Promise<unknown>>;
+  methods?: Record<
+    string,
+    (args: unknown, sender: chrome.runtime.MessageSender) => Promise<unknown>
+  >;
 }
 
 export interface EngineContext {

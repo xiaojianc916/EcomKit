@@ -89,11 +89,16 @@ export const PDD_MAIN_IMAGE_PATHS = [
   'goods.top_gallery',
   'goods.banner',
   'goods.gallery',
-  'detailGallery',
+  // 注意：**detailGallery 不能出现在这里**。它是详情图数组（见 PDD_DETAIL_IMAGE_PATHS），
+  // 放在主图候选里会让「没有 topGallery 的商品」把 19 张详情图全判成主图，
+  // 下载出来的 主图/ 目录里是详情长图、详情图/ 目录是空的。
 ] as const;
 
 /** 主图数组都拿不到时的最后兜底：单张大图（hd_thumb_url / thumb_url） */
 export const PDD_SINGLE_MAIN_PATHS = [
+  // 真实抓包里没有 topGallery 时，唯一的主图在这个字段上
+  'pdd_thumb_url',
+  'pddThumbUrl',
   'hdThumbUrl',
   'hd_thumb_url',
   'thumbUrl',
@@ -116,14 +121,7 @@ export const PDD_DETAIL_IMAGE_PATHS = [
 ] as const;
 
 /** SKU 列表 */
-export const PDD_SKU_PATHS = [
-  'skus',
-  'sku',
-  'skuList',
-  'sku_list',
-  'specs',
-  'goods.skus',
-] as const;
+export const PDD_SKU_PATHS = ['skus', 'sku', 'skuList', 'sku_list', 'specs', 'goods.skus'] as const;
 
 /** 视频 */
 export const PDD_VIDEO_PATHS = [

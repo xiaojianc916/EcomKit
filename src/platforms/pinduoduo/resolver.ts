@@ -139,7 +139,9 @@ function hasProductImages(doc: Document): boolean {
     for (const img of doc.querySelectorAll('img')) {
       const src = pickImgSrc(img);
       if (src === undefined) continue;
-      const url = normalizeUrl(src, { base: doc.location?.href ?? 'https://mobile.yangkeduo.com/' });
+      const url = normalizeUrl(src, {
+        base: doc.location?.href ?? 'https://mobile.yangkeduo.com/',
+      });
       if (url === undefined || !isAllowedCdnUrl(url, CDN_HOSTS)) continue;
       if (imageWidth(img) >= 100) return true;
     }
@@ -358,7 +360,8 @@ export function collectPddDomAssets(doc: Document, productId: string): Asset[] {
 }
 
 /** 推荐区的标题文案：这些文字之后的图片都不是本商品的 */
-const RECOMMEND_HEADINGS = /为你推荐|猜你喜欢|相似商品|看了又看|店铺推荐|更多好货|大家都在买|同类好物/;
+const RECOMMEND_HEADINGS =
+  /为你推荐|猜你喜欢|相似商品|看了又看|店铺推荐|更多好货|大家都在买|同类好物/;
 
 function findRecommendCutoff(doc: Document): Element | null {
   try {
@@ -523,8 +526,13 @@ export function draftFromPayload(
   const shopName = readString(mall, PDD_SHOP_PATHS) ?? readString(goods, PDD_SHOP_PATHS);
   if (shopName !== undefined) draft.shopName = shopName;
 
+  /**
+   * 价格：拼多多的真实抓包里 minGroupPrice 这类字段**全是字符串 "0"**
+   * （未登录 / 优惠前价格不下发），直接显示会得到「¥0.00」，写进 商品信息.txt
+   * 反而误导用户。所以 0 和非法值一律当作「拿不到」，宁可不显示。
+   */
   const priceFen = readNumber(goods, PDD_PRICE_PATHS);
-  if (priceFen !== undefined && Number.isFinite(priceFen)) {
+  if (priceFen !== undefined && Number.isFinite(priceFen) && priceFen > 0) {
     draft.price = `¥${(priceFen / 100).toFixed(2)}`;
   }
 

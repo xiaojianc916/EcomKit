@@ -1,11 +1,14 @@
 import { EcError } from '../../errors/ec-error';
 import type { Logger } from '../../log/logger';
+// 必须是**静态** import：动态 import 在打包后的 offscreen chunk 里会退化成 undefined，
+// 调用时抛 TypeError，表现为「每个文件都写失败」。
+import { sendMessage } from '../../messaging/runtime';
 import { NAME_LIMITS, sanitizeName } from '../../naming/sanitize';
 import { uniqueFileName } from '../../naming/unique';
 import { alwaysReadyProbe, checkDirStatus } from '../dir-status';
 import { mapFsError } from '../fs-errors';
 import { blobToText, countingStream, throwIfAborted, toStream } from '../stream-utils';
-import type { DirEntry, DirState, FsSink, RelPath, WriteResult } from '../types';
+import type { DirEntry, DirState, FsSink, RelPath, WriteFileOptions, WriteResult } from '../types';
 
 /**
  * FsSink 的 chrome.downloads 兜底实现（方案 §9.13）。
@@ -47,9 +50,17 @@ export interface DownloadsApi {
   search(query: chrome.downloads.DownloadQuery): Promise<chrome.downloads.DownloadItem[]>;
 }
 
+/**
+ * 默认的下载通道。
+ *
+ * **chrome.downloads 不在 offscreen 文档里**（Chrome 只给 offscreen 留 chrome.runtime），
+ * 所以引擎不能直接调它，只能把字节转给 bg（那边有完整 API）。
+ * 旧实现直接调用 globalThis.chrome.downloads，在 offscreen 里必然抛
+ * downloads-api-unavailable —— 「浏览器下载目录」这个保存方式从来就不可能成功。
+ */
 function defaultDownloadsApi(): DownloadsApi {
   const api = (globalThis as { chrome?: typeof chrome }).chrome?.downloads;
-  if (!api) throw new EcError('INTERNAL', { reason: 'downloads-api-unavailable' });
+  if (!api) return createBridgeDownloadsApi();
   return {
     download: (options) =>
       new Promise<number>((resolve, reject) => {
@@ -70,12 +81,87 @@ function defaultDownloadsApi(): DownloadsApi {
   };
 }
 
+/**
+ * 通过 bg 落盘的下载通道（offscreen 里唯一可行的方式）。
+ *
+ * 只实现 download()：search 在 offscreen 里也拿不到，所以「最终路径」由 bg 回传，
+ * sink 直接用返回值把自己内存里的路径树更新掉。
+ */
+function createBridgeDownloadsApi(): DownloadsApi {
+  return {
+    async download(options) {
+      const url = options.url ?? '';
+      const filename = options.filename ?? 'download';
+      // http(s) 直链：原样转给 bg，由 chrome.downloads 流式落盘（文件名才保得住）
+      if (/^https?:\/\//i.test(url)) {
+        const res = (await sendMessage('engine.download', { filename, url })) as {
+          filename: string;
+          size: number;
+        };
+        if (!res || typeof res.filename !== 'string') {
+          throw new EcError('INTERNAL', { reason: 'download-bridge-bad-response' });
+        }
+        bridgeResults.set(filename, res);
+        return 0;
+      }
+      // blob:/data: URL 只在本上下文有效，先把字节读出来再发过去
+      if (typeof fetch !== 'function') {
+        throw new EcError('INTERNAL', { reason: 'offscreen-fetch-unavailable' });
+      }
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const buffer = await blob.arrayBuffer();
+      const bridged = (await sendMessage('engine.download', {
+        filename,
+        data: buffer,
+        mime: blob.type,
+      })) as { filename: string; size: number };
+      if (!bridged || typeof bridged.filename !== 'string') {
+        throw new EcError('INTERNAL', { reason: 'download-bridge-bad-response' });
+      }
+      bridgeResults.set(filename, bridged);
+      return 0;
+    },
+    async search(query) {
+      // 合成一条记录：bg 已经把真实路径和大小回传了
+      const hit = [...bridgeResults.entries()].find(([, v]) => v !== undefined)?.[1];
+      void query;
+      return hit === undefined
+        ? []
+        : [
+            {
+              filename: hit.filename,
+              fileSize: hit.size,
+              totalBytes: hit.size,
+            } as chrome.downloads.DownloadItem,
+          ];
+    },
+  };
+}
+
+/** bg 回传的落盘结果（filename → { 真实路径, 字节数 }） */
+const bridgeResults = new Map<string, { filename: string; size: number }>();
+
+/**
+ * chrome.downloads 拒绝的文件名（实测：「Invalid filename」）：
+ *   · 以点开头的文件名（.ecbox.json）
+ *   · 空段、以及非法路径字符
+ * 所以 downloads 模式下的侧录文件要用一个普通名字（见 MANIFEST_NAME_DOWNLOADS）。
+ */
+export const DOWNLOADS_MANIFEST_NAME = '_ecbox.json';
+
 /** 相对路径 → 下载文件名（正斜杠，Chrome 下载 API 的约定） */
 export function downloadPathName(rootName: string, dir: RelPath, name: string): string {
-  const segments = [sanitizeName(rootName, { maxLength: NAME_LIMITS.platform }), ...dir, name].map(
-    (seg) => seg.replace(/^\/+|\/+$/g, ''),
-  );
+  const segments = [sanitizeName(rootName, { maxLength: NAME_LIMITS.platform }), ...dir, name]
+    .map((seg) => seg.replace(/^\/+|\/+$/g, '').trim())
+    // chrome.downloads 不允许以点开头的文件名，这里补一个前缀而不是丢掉文件
+    .map((seg) => (seg.startsWith('.') ? `_${seg.slice(1)}` : seg));
   return segments.filter((seg) => seg !== '').join('/');
+}
+
+/** downloads 模式下 .ecbox.json 的实际文件名（读取时也要用它，否则永远读不到） */
+export function downloadsManifestName(name: string): string {
+  return name.startsWith('.') ? `_${name.slice(1)}` : name;
 }
 
 /**
@@ -180,13 +266,40 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
       name: string,
       data: Blob | ReadableStream<Uint8Array>,
       signal: AbortSignal,
+      opts?: WriteFileOptions,
     ): Promise<WriteResult> {
       throwIfAborted(signal);
 
       const blob = data instanceof Blob ? data : await streamToBlobCounting(data);
       throwIfAborted(signal);
 
-      const filename = downloadPathName(rootName, dir, name);
+      const filename = downloadPathName(rootName, dir, downloadsManifestName(name));
+
+      /**
+       * 内容没被改写过（没有 WebP→JPG 转码）时，直接把**原始 https 地址**交给浏览器下载：
+       * chrome.downloads 只有对 http(s)/blob URL 才保留 filename，用 data: URL 时
+       * Chrome 会把文件存成 GUID（实测），用户拿到的是一堆无名文件。
+       */
+      if (opts?.sourceUrl?.startsWith('http') && blob.size > 0) {
+        try {
+          const sourceId = await api().download({
+            url: opts.sourceUrl,
+            filename,
+            conflictAction: 'uniquify',
+            saveAs: false,
+          });
+          const [sourceItem] = await api().search({ id: sourceId });
+          if (sourceItem?.filename) {
+            const size = sourceItem.fileSize ?? sourceItem.totalBytes ?? blob.size;
+            files.set(pathKey(sourceItem.filename), size);
+            files.set(pathKey(filename), size);
+            schedulePersist();
+            return { size, name: fileNameOf(sourceItem.filename) };
+          }
+        } catch {
+          // 远端直连失败（需要 Referer / 已过期）就退回本地字节
+        }
+      }
       const url = URL.createObjectURL(blob);
       try {
         const id = await api().download({
@@ -204,14 +317,23 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
         schedulePersist();
         return { size, name: fileNameOf(finalPath) };
       } catch (e) {
-        throw mapFsError(e);
+        // 把真实原因带进错误对象，否则上层只能看到 WRITE_FAILED 一个码
+        const mapped = mapFsError(e);
+        throw new EcError(mapped.code, {
+          reason: 'downloads-write-failed',
+          detail: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+          stack:
+            e instanceof Error
+              ? (e.stack ?? '').split(String.fromCharCode(10)).slice(1, 4)
+              : undefined,
+        });
       } finally {
         URL.revokeObjectURL(url);
       }
     },
 
     async readText(dir: RelPath, name: string): Promise<string | null> {
-      const key = pathKey(downloadPathName(rootName, dir, name));
+      const key = pathKey(downloadPathName(rootName, dir, downloadsManifestName(name)));
       const text = texts.get(key);
       if (text !== undefined) return text;
       // 没写过就读不到（§9.13 的已知限制），返回 null 让调用方按「没有记录」处理
@@ -219,7 +341,7 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
     },
 
     async writeText(dir: RelPath, name: string, text: string): Promise<void> {
-      const key = pathKey(downloadPathName(rootName, dir, name));
+      const key = pathKey(downloadPathName(rootName, dir, downloadsManifestName(name)));
       texts.set(key, text);
       await this.writeFile(
         dir,
@@ -256,7 +378,7 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
 
     /** Chrome 不提供删除，只能在内存树里移除，避免下次 resolveName 又让开 */
     async removeFile(dir: RelPath, name: string): Promise<void> {
-      const key = pathKey(downloadPathName(rootName, dir, name));
+      const key = pathKey(downloadPathName(rootName, dir, downloadsManifestName(name)));
       files.delete(key);
       texts.delete(key);
       schedulePersist();
@@ -280,7 +402,7 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
 
     /** 返回记录里的大小；没有记录时再去 chrome.downloads 里查一次（§9.13 增量判断） */
     async exists(dir: RelPath, name: string): Promise<number | null> {
-      const filename = downloadPathName(rootName, dir, name);
+      const filename = downloadPathName(rootName, dir, downloadsManifestName(name));
       const remembered = files.get(pathKey(filename));
       if (remembered !== undefined) return remembered;
       try {

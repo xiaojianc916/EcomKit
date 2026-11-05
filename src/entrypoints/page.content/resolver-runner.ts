@@ -13,12 +13,13 @@
  * 旧实现的问题：超时只设了 timeoutHit = true，`await Promise.all(sources)` 仍然等着
  * 永不结束的抓包流，resolveSnapshot 永远不返回，状态卡在 resolving。
  */
-import type { CapturedPayload, PlatformResolver, ResolveContext } from '../../platforms/types';
-import type { PlatformId, ProductDraft, ProductSnapshot } from '../../kernel/model/product';
-import { DraftAccumulator } from '../../platforms/shared/merge';
+
 import { createLogger } from '../../kernel/log/logger';
-import { readInlineGlobal } from '../../platforms/shared/inline-ssr';
 import { readPath } from '../../kernel/messaging/page-bridge';
+import type { PlatformId, ProductDraft, ProductSnapshot } from '../../kernel/model/product';
+import { readInlineGlobal } from '../../platforms/shared/inline-ssr';
+import { DraftAccumulator } from '../../platforms/shared/merge';
+import type { CapturedPayload, PlatformResolver, ResolveContext } from '../../platforms/types';
 
 const log = createLogger('resolver-runner');
 

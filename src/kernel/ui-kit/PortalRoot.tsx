@@ -15,7 +15,8 @@ const PortalContainerContext = createContext<HTMLElement | ShadowRoot | null>(nu
 export interface PortalRootProps {
   /** 内容脚本里传 shadow root；独立页面不用传 */
   value?: HTMLElement | ShadowRoot;
-  children: ReactNode;
+  /** React 19 之后 children 仍走 props，但用 createElement 时可以当第三个参数传 */
+  children?: ReactNode;
 }
 
 export function PortalRoot({ value, children }: PortalRootProps) {

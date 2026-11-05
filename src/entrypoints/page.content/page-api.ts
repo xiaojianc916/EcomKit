@@ -6,12 +6,12 @@
  * 也不会把 React 之外的东西拖进 Service Worker。
  */
 import type { PageApi } from '../../features/types';
-import type { JobRecord } from '../../kernel/jobs/types';
 import type { DirState } from '../../kernel/fs/types';
+import type { JobRecord } from '../../kernel/jobs/types';
+import { createLogger } from '../../kernel/log/logger';
+import { connectJobPort } from '../../kernel/messaging/port';
 import type { PortMessage } from '../../kernel/messaging/protocol';
 import { sendMessage } from '../../kernel/messaging/runtime';
-import { connectJobPort } from '../../kernel/messaging/port';
-import { createLogger } from '../../kernel/log/logger';
 import type { PageController } from './controller';
 
 const log = createLogger('page.api');
@@ -24,8 +24,9 @@ export function createPageApi(controller: PageController): PageApi {
   }>();
   const latest = new Map<string, JobRecord>();
   const prefsStore = new Map<string, Map<string, unknown>>();
-  let toastHandler: ((msg: string, opts?: { action?: { label: string; run(): void } }) => void) | null =
-    null;
+  let toastHandler:
+    | ((msg: string, opts?: { action?: { label: string; run(): void } }) => void)
+    | null = null;
 
   // 一个共享 Port 连接把任务事件分发给所有订阅者
   const disconnect = connectJobPort({
@@ -47,7 +48,8 @@ export function createPageApi(controller: PageController): PageApi {
   const api: PageApi = {
     async submitJob(type, payload, opts) {
       const current = controller.current();
-      const dedupeKey = opts?.dedupeKey ?? (current ? current.platform + ':' + current.productId : '');
+      const dedupeKey =
+        opts?.dedupeKey ?? (current ? `${current.platform}:${current.productId}` : '');
       const res = await sendMessage('job.submit', {
         type,
         payload,
@@ -99,9 +101,7 @@ export function createPageApi(controller: PageController): PageApi {
         return controller.dirState();
       },
       openGrant(reason) {
-        void sendMessage('fs.openGrant',
-          reason === 'change' ? { reason: 'change' } : { reason },
-        );
+        void sendMessage('fs.openGrant', reason === 'change' ? { reason: 'change' } : { reason });
       },
     },
 

@@ -96,6 +96,7 @@ export function FailureList({ items, onRetry, onRetryAll, onClose }: FailureList
                 {failureLabel(item)}
               </span>
               <span style={{ color: 'var(--ec-text-2)', flex: 'none' }}>{preset.title}</span>
+              {/* 引擎按任务重试，没有逐项接口；文案不写成「只重试这一个」，避免误导 */}
               <Button variant="link" onClick={() => onRetry(item.itemKey)}>
                 重试
               </Button>

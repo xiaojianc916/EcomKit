@@ -1,4 +1,4 @@
-import type { FeatureManifest, ServiceFeature, RegisteredFeature } from './types';
+import type { FeatureManifest, RegisteredFeature, ServiceFeature } from './types';
 
 const manifestModules = import.meta.glob<{ default: FeatureManifest }>('./*/manifest.ts', {
   eager: true,

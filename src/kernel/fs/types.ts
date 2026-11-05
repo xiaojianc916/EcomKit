@@ -24,6 +24,18 @@ export interface WriteResult {
 }
 
 /**
+ * 写入的附加信息。
+ *
+ * `sourceUrl` 只对 downloads 模式有意义：**chrome.downloads 只认 http(s)/blob URL 的文件名**，
+ * 用 data: URL 传内容时 Chrome 会用一串 GUID 当文件名（实测），落盘结果完全没法用。
+ * 所以内容没被改写过（没有转码）时，直接把原始地址交给浏览器下载，文件名才保得住。
+ */
+export interface WriteFileOptions {
+  /** 原始远端地址；内容与它一致时优先用它落盘 */
+  sourceUrl?: string;
+}
+
+/**
  * 相对根目录的路径分段，例如 `['拼多多', '夏季连衣裙_482319937501', '主图']`。
  * 空数组表示根目录本身。
  */
@@ -54,6 +66,7 @@ export interface FsSink {
     name: string,
     data: Blob | ReadableStream<Uint8Array>,
     signal: AbortSignal,
+    opts?: WriteFileOptions,
   ): Promise<WriteResult>;
   readText(dir: RelPath, name: string): Promise<string | null>;
   writeText(dir: RelPath, name: string, text: string): Promise<void>;
@@ -80,6 +93,14 @@ export interface FsGateway {
     productId: string;
     preferredName: string;
   }): Promise<{ dir: RelPath; folderName: string; platformDir: RelPath }>;
+  /**
+   * 只查找、不创建：这个商品在磁盘上已有的文件夹（历史查询用）。
+   * 找不到返回 null —— 调用方按「还没下载过」处理，而不是顺手建一个空目录。
+   */
+  findProductFolder(opts: {
+    platform: string;
+    productId: string;
+  }): Promise<{ dir: RelPath; folderName: string } | null>;
   ensurePlatformDir(platform: string): Promise<RelPath>;
   ensureSubdir(parent: RelPath, name: string): Promise<RelPath>;
   writeFile(
@@ -87,6 +108,7 @@ export interface FsGateway {
     name: string,
     data: Blob | ReadableStream<Uint8Array>,
     signal: AbortSignal,
+    opts?: WriteFileOptions,
   ): Promise<WriteResult>;
   readJson<T>(dir: RelPath, name: string): Promise<T | null>;
   writeJson(dir: RelPath, name: string, value: unknown): Promise<void>;

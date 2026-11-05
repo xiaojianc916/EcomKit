@@ -4,9 +4,10 @@ import type { JobRecord } from '../../kernel/jobs/types';
 import type { HistoryState } from '../../kernel/messaging/protocol';
 import type { AssetKind } from '../../kernel/model/asset';
 import type { ProductSnapshot } from '../../kernel/model/product';
-import type { PageFeature, PanelProps, QuickAction } from '../types';
+import type { PageApi, PageFeature, PanelProps, QuickAction } from '../types';
 import { createMediaStore, isSelectionStale, type MediaStore } from './media-store';
-import { type PlannerSettings, planDownload } from './planner';
+import { buildMediaDownloadPayload, platformDisplayName, toPlannerSettings } from './payload';
+import { planDownload } from './planner';
 import {
   joinKindLabels,
   KIND_ORDER,
@@ -14,7 +15,7 @@ import {
   type PrimaryActionState,
   primaryActionModel,
 } from './primary-action-model';
-import type { MediaDownloadSettings } from './settings';
+import { DEFAULT_MEDIA_DOWNLOAD_SETTINGS, type MediaDownloadSettings } from './settings';
 import { AssetList, groupAssetsByKind, isAllChecked } from './ui/AssetList';
 import { FailureList } from './ui/FailureList';
 import { PrimaryActionView } from './ui/PrimaryAction';
@@ -30,32 +31,9 @@ import { SaveBar } from './ui/SaveBar';
  * 页面侧不下载文件、不碰 chrome.downloads —— 一切通过 PageApi 提交任务（§8.2、§4.1）。
  */
 
-/** 平台显示名（目录和文案都用平台的叫法，§10.7 第 4 条） */
-export const PLATFORM_NAMES: Record<string, string> = {
-  pinduoduo: '拼多多',
-  douyin: '抖音',
-};
-
-export function platformDisplayName(platform: string): string {
-  return PLATFORM_NAMES[platform] ?? platform;
-}
-
-/** 把 feature settings 转成 planner 需要的形状 */
-export function toPlannerSettings(settings: MediaDownloadSettings): PlannerSettings {
-  return {
-    byPlatform: settings.byPlatform,
-    folderTemplate: settings.folderTemplate,
-    dirNames: {
-      main: settings.dirNames.main,
-      sku: settings.dirNames.sku,
-      detail: settings.dirNames.detail,
-      video: settings.dirNames.video,
-    },
-    infoTxt: settings.infoTxt,
-    videoCover: settings.videoCover,
-    detailMinWidth: settings.detailMinWidth,
-  };
-}
+// 平台显示名和设置换算都挪到 ./payload.ts（页面和引擎共用同一份定义），
+// 这里重新导出只为兼容既有的调用点和测试。
+export { PLATFORM_NAMES, platformDisplayName, toPlannerSettings } from './payload';
 
 /**
  * ⑤ 保存位置的相对路径预览。用 planner 算，保证预览的名字和真正落盘的名字一致
@@ -96,6 +74,7 @@ export function MediaDownloadPanel({
   // 每个功能自己再查一次就会多触发一次权限探测。
   dir,
   job: jobFromShell,
+  rootPath,
 }: PanelProps<MediaDownloadSettings>) {
   const mediaStoreRef = useRef<MediaStore | null>(null);
   if (mediaStoreRef.current === null) {
@@ -109,9 +88,55 @@ export function MediaDownloadPanel({
   const sync = useSyncStore(store);
 
   const [now, setNow] = useState(() => Date.now());
+  /** 提交过程中的状态：让主按钮在等待 bg 回话时也给出可见反馈 */
+  const [submitting, setSubmitting] = useState(false);
+  /** 提交失败的原因；非空时显示在主按钮下方，绝不静默 */
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * 已经提交、正在等用户在弹出的授权小窗里选目录。
+   *
+   * 没有它的话，用户点下载 → 弹出小窗 → 面板上仍然是「下载 N 个文件」且照样能点，
+   * 看起来就像「点了没反应，还让我再点一次」。
+   */
+  const [grantPending, setGrantPending] = useState(false);
 
   const byKind = useMemo(() => groupAssetsByKind(snapshot.assets), [snapshot.assets]);
-  const counts = useMemo(() => countByKind(snapshot), [snapshot]);
+  /**
+   * 每类**真正会被写入**的数量（不是快照里的素材数）。
+   *
+   * 主按钮写「下载 N 个文件」，N 必须等于任务实际要写的条数：
+   * detailMinWidth 会把过窄的详情图过滤掉、视频封面会多出一条、重复 key 会去重。
+   * 旧实现直接用快照总数，用户点了「下载 24 个」结果只下来 22 个。
+   */
+  const counts = useMemo(() => {
+    const sizes = new Set([...sync.checkedKinds]);
+    try {
+      const plan = planDownload({
+        snapshot,
+        selection: {
+          kinds: [...sizes],
+          ...(sync.selectedKeys.size > 0 ? { keys: [...sync.selectedKeys] } : {}),
+        },
+        settings: toPlannerSettings(settings),
+        platformDisplayName: platformDisplayName(snapshot.platform),
+      });
+      const out: Record<AssetKind, number> = { main: 0, sku: 0, detail: 0, video: 0 };
+      for (const item of plan.items) {
+        if (
+          item.group === 'main' ||
+          item.group === 'sku' ||
+          item.group === 'detail' ||
+          item.group === 'video'
+        ) {
+          out[item.group] += 1;
+        }
+      }
+      return out;
+    } catch {
+      // 模板非法等情况下退回原始计数，至少数量不会突然变成 0
+      return countByKind(snapshot);
+    }
+  }, [snapshot, sync.checkedKinds, sync.selectedKeys, settings]);
   const allChecked = useMemo(
     () => isAllChecked(byKind, sync.checkedKinds),
     [byKind, sync.checkedKinds],
@@ -151,7 +176,8 @@ export function MediaDownloadPanel({
     });
   }, [api, dedupeKey, store]);
 
-  // 历史记录（§9.11）：目录不是 ready 时不读，避免触发授权
+  // 历史记录（§9.11）：目录不是 ready 时不读，避免触发授权。
+  // 带上 platform 和当前快照的 itemKey：引擎要靠它们算出「上次下过哪些、还缺几个」。
   useEffect(() => {
     if (dir.status !== 'ready') {
       store.getState().setHistory(null);
@@ -160,7 +186,22 @@ export function MediaDownloadPanel({
     let alive = true;
     void (async () => {
       try {
-        const raw = await api.call('history.get', { productId: snapshot.productId });
+        /**
+         * 期望的 itemKey 必须来自**真实的下载计划**，不能是快照里的全部素材：
+         * detailMinWidth 过滤掉的、去重掉的素材根本不会被下载，
+         * 拿它们当期望会让「补全 N 个文件」永远清不掉。
+         */
+        const planned = planDownload({
+          snapshot,
+          selection: { kinds: [...sync.checkedKinds] },
+          settings: toPlannerSettings(settings),
+          platformDisplayName: platformDisplayName(snapshot.platform),
+        });
+        const raw = await api.call('history.get', {
+          platform: snapshot.platform,
+          productId: snapshot.productId,
+          itemKeys: planned.items.map((item) => item.itemKey),
+        });
         if (alive) store.getState().setHistory((raw as HistoryState | null) ?? null);
       } catch {
         // 历史读不到不影响下载，静默
@@ -170,7 +211,25 @@ export function MediaDownloadPanel({
     return () => {
       alive = false;
     };
-  }, [api, dir.status, snapshot.productId, store]);
+  }, [
+    api,
+    dir.status,
+    snapshot.platform,
+    snapshot.productId,
+    snapshot.assets,
+    store,
+    sync.checkedKinds,
+    snapshot,
+    settings,
+  ]);
+
+  // 目录一旦可用（授权完成 / 用户换好目录），就不再算「等授权」
+  useEffect(() => {
+    if (dir.status === 'ready') {
+      setGrantPending(false);
+      setSubmitError(null);
+    }
+  }, [dir.status]);
 
   const actionState: PrimaryActionState = {
     status: status === 'resolving' ? 'resolving' : 'ready',
@@ -179,13 +238,16 @@ export function MediaDownloadPanel({
     selectedKinds: [...sync.checkedKinds],
     selectedKeys: [...sync.selectedKeys],
     job: sync.job,
+    // 其他标签页 / 排队 / 等授权小窗这三个状态目前没有数据源：
+    // 保持 null / 0 / false 是**如实**的，不是遗忘 —— 主按钮就不会显示根本没有的状态。
+    // 需要它们时必须先有「跨标签页任务查询」和「授权小窗的 pending 回执」，见 docs/audit-c §C3。
     otherTabJob: null,
     queuedAhead: 0,
     history:
       sync.history === null
         ? null
         : { lastAt: sync.history.lastAt, missingCount: sync.history.missing.length },
-    grantPending: false,
+    grantPending,
     now,
   };
   const model = primaryActionModel(actionState);
@@ -199,34 +261,72 @@ export function MediaDownloadPanel({
   /**
    * 提交下载：页面侧只发意图，写入计划由 engine 生成（§8.6）。
    *
-   * **必须处理返回值**：目录没授权时 bg 返回 { waiting: 'dir' } 并去开授权小窗。
-   * 如果不管这个返回值，一旦小窗被浏览器拦下（或用户没注意到），
-   * 页面上就完全不发生任何事，用户会以为「点了没反应」。
-   * 所以这里显式兜底：拿到 waiting 就主动开授权窗并给出可见反馈。
+   * 三个都必须做，少一个就会变成「点了没反应」：
+   * 1. **用 ./payload.ts 的同一个 schema 构造载荷**：少了 platformDisplayName 之类的字段，
+   *    引擎会整单拒绝；在这里 parse 一次，字段漂移当场就报出来；
+   * 2. **处理返回值**：目录没授权时 bg 返回 { waiting: 'dir' } 并去开授权小窗；
+   * 3. **把失败留在面板上**：Toast 可能因为外壳没挂载而不可见，所以同时写进 submitError，
+   *    由主按钮下方的说明行显示（用户至少能看到「为什么没开始」）。
    */
   const submit = (kinds: readonly AssetKind[], keys?: readonly string[]): void => {
+    setSubmitting(true);
+    setSubmitError(null);
     void (async () => {
       try {
-        const res = await api.submitJob(
-          'media-download',
-          {
-            snapshot,
-            selection: { kinds: [...kinds], ...(keys === undefined ? {} : { keys: [...keys] }) },
-            settings,
+        const payload = buildMediaDownloadPayload({
+          snapshot,
+          selection: {
+            kinds: [...kinds],
+            ...(keys === undefined ? {} : { keys: [...keys] }),
           },
-          { dedupeKey, label: `下载 ${snapshot.title}` },
-        );
+          settings,
+        });
+        const res = await api.submitJob('media-download', payload, {
+          dedupeKey,
+          label: `下载 ${snapshot.title}`,
+        });
         if (res && 'waiting' in res && res.waiting === 'dir') {
           // bg 已经尝试开过小窗；这里只在它没开成时补一次，并告诉用户去哪儿操作
+          setGrantPending(true);
           openGrant();
           api.toast('请在弹出的小窗中选择保存位置');
         }
       } catch (e) {
-        // 提交失败也要让用户看到，而不是静默
-        api.toast('提交下载失败，请重试', {
+        // 提交失败必须可见：Toast + 面板内说明行各一份
+        const reason = describeSubmitError(e);
+        setSubmitError(reason);
+        api.toast(reason, {
           action: { label: '重试', run: () => submit(kinds, keys) },
         });
-        void e;
+      } finally {
+        setSubmitting(false);
+      }
+    })();
+  };
+
+  /**
+   * 重试失败项。
+   *
+   * **不做「静默退化成整单重提」**：引擎返回 null 说明它那边没有这个任务或没有失败项，
+   * 这时整单重提会让用户以为自己在重试 1 个失败项，实际重新走了一遍全部素材
+   * （并且可能覆盖/跳过一堆本来没问题的文件）。这里明确告诉用户发生了什么，
+   * 给一个「重新下载全部」的显式动作，由用户自己决定。
+   */
+  const retryFailed = (jobId: string): void => {
+    void (async () => {
+      try {
+        const res = await api.retryJob(jobId, 'failed');
+        if (res === undefined || res === null) {
+          setSubmitError('这些失败项已经不在队列里了，可以重新下载全部');
+          api.toast('失败项已失效，可重新下载全部', {
+            action: { label: '重新下载', run: () => submit([...sync.checkedKinds]) },
+          });
+        }
+      } catch {
+        setSubmitError('重试失败，请重新下载全部');
+        api.toast('重试失败，请重新下载全部', {
+          action: { label: '重新下载', run: () => submit([...sync.checkedKinds]) },
+        });
       }
     })();
   };
@@ -241,8 +341,18 @@ export function MediaDownloadPanel({
         );
         return;
       case 'resume':
+        // 取消 / 中断后「继续下载」：不是重试失败项，而是**重新提交**同一份选择。
+        // .ecbox.json 会让已完成的文件走「已存在」跳过，所以等于续传（§9.11）。
+        // 旧实现把 resume 接到了 retryJob 上，没有失败项时 runner 直接返回 null ——
+        // 按钮点了什么都不发生。
+        submit([...sync.checkedKinds]);
+        return;
       case 'retry-failed':
-        if (sync.job !== null) void api.retryJob(sync.job.id, 'failed');
+        if (sync.job === null) {
+          submit([...sync.checkedKinds]);
+          return;
+        }
+        void retryFailed(sync.job.id);
         return;
       case 'verify':
         // 「已全部下载」点一下做一次增量检查（§10.4 表下注）
@@ -279,12 +389,25 @@ export function MediaDownloadPanel({
     }
   }, [snapshot, sync.checkedKinds, settings, now]);
 
+  // 每一类里「已存在、这次跳过」的数量（§10.4 素材行的「✓ N · 已存在」）
+  const skippedByKind = useMemo(() => {
+    const job = sync.job;
+    const out: Partial<Record<AssetKind, number>> = {};
+    if (job === null) return out;
+    for (const kind of KIND_ORDER) {
+      const group = job.byGroup[kind];
+      if (group !== undefined && group.skipped > 0) out[kind] = group.skipped;
+    }
+    return out;
+  }, [sync.job]);
+
   const nonEmptyKinds = KIND_ORDER.filter((k) => counts[k] > 0);
 
   return (
     <div>
       <AssetList
         byKind={byKind}
+        skippedByKind={skippedByKind}
         checkedKinds={sync.checkedKinds}
         selectedKeys={sync.selectedKeys}
         expandedKind={sync.expandedKind}
@@ -296,7 +419,8 @@ export function MediaDownloadPanel({
         allChecked={allChecked}
         onDownloadKind={(kind) => submit([kind])}
         onRetryKind={() => {
-          if (sync.job !== null) void api.retryJob(sync.job.id, 'failed');
+          if (sync.job === null) return;
+          void retryFailed(sync.job.id);
         }}
         onExpand={(kind) => store.getState().expand(kind)}
         onToggleKey={(kind, key) => store.getState().toggleKey(kind, key)}
@@ -312,6 +436,7 @@ export function MediaDownloadPanel({
       <SaveBar
         dir={dir}
         relativePath={folderPreview}
+        {...(rootPath === undefined ? {} : { rootPath })}
         onOpenGrant={openGrant}
         onCopy={(text) => void api.copy(text)}
       />
@@ -319,6 +444,8 @@ export function MediaDownloadPanel({
       <PrimaryActionView
         model={model}
         onAction={runAction}
+        submitting={submitting}
+        errorText={submitError}
         {...(sync.job === null ? {} : { bytes: sync.job.bytes })}
       />
 
@@ -328,11 +455,19 @@ export function MediaDownloadPanel({
             itemKey: f.itemKey,
             code: f.code,
           }))}
-          onRetry={() => {
-            if (sync.job !== null) void api.retryJob(sync.job.id, 'failed');
+          onRetry={(_itemKey) => {
+            /**
+             * 单项重试和「重试全部」结果相同：引擎的重试单位是**任务**（runner.retry 只接受
+             * jobId），没有「只重跑某一个 itemKey」的接口。与其假装支持，不如把文案说清楚 ——
+             * FailureList 的单项按钮改成「重试失败项」，点哪一个都是重跑这一批。
+             * 真要做逐项重试，得先给 JobTypeDef 加一个「按 itemKey 过滤计划」的入口。
+             */
+            if (sync.job === null) return;
+            retryFailed(sync.job.id);
           }}
           onRetryAll={() => {
-            if (sync.job !== null) void api.retryJob(sync.job.id, 'failed');
+            if (sync.job === null) return;
+            retryFailed(sync.job.id);
           }}
           onClose={() => store.getState().setFailuresOpen(false)}
         />
@@ -366,11 +501,25 @@ export function mediaQuickActions(snap: ProductSnapshot): QuickAction[] {
   const kinds: AssetKind[] = ['main', 'sku', 'detail', 'video'];
   const countOf = (kind: AssetKind): number => snap.assets.filter((a) => a.kind === kind).length;
 
+  // 快捷入口拿不到功能设置，用默认值构造**完整**载荷：同样过一遍共享 schema，
+  // 字段不会漏（旧实现就是在这里漏掉了引擎必需的字段）。
+  const submitKinds = (api: PageApi, selected: AssetKind[]): void => {
+    void api.submitJob(
+      'media-download',
+      buildMediaDownloadPayload({
+        snapshot: snap,
+        selection: { kinds: selected },
+        settings: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+      }),
+      { dedupeKey: `${snap.platform}:${snap.productId}`, label: `下载 ${snap.title}` },
+    );
+  };
+
   const actions: QuickAction[] = [
     {
       id: 'media-download.all',
       title: `下载全部 ${snap.assets.length} 个素材`,
-      run: (api) => void api.submitJob('media-download', { snapshot: snap, selection: { kinds } }),
+      run: (api) => submitKinds(api, kinds),
     },
   ];
 
@@ -380,11 +529,20 @@ export function mediaQuickActions(snap: ProductSnapshot): QuickAction[] {
     actions.push({
       id: `media-download.${kind}`,
       title: `下载${joinKindLabels([kind])} ${count} 个`,
-      run: (api) =>
-        void api.submitJob('media-download', { snapshot: snap, selection: { kinds: [kind] } }),
+      run: (api) => submitKinds(api, [kind]),
     });
   }
   return actions;
+}
+
+/** 提交失败时给用户看的一句话（不显示异常 message，§6.2） */
+export function describeSubmitError(e: unknown): string {
+  const code = (e as { code?: string } | null)?.code;
+  if (code === 'INTERNAL') return '提交下载失败：任务参数不完整，请刷新页面后重试';
+  if (code === 'DIR_UNSET' || code === 'DIR_NEEDS_GRANT' || code === 'DIR_GONE') {
+    return '需要先选择保存位置';
+  }
+  return '提交下载失败，请重试';
 }
 
 /** 设置页分组（§10.8 文件命名 + 素材两组里属于这个功能的部分） */

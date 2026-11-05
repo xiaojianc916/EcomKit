@@ -6,9 +6,7 @@ import { CAPTURE_SETTLE_MS, resolveSnapshot } from './resolver-runner';
 const draft: ProductDraft = {
   source: 'ssr',
   title: '测试商品',
-  assets: [
-    { key: 'm1', kind: 'main', index: 0, candidates: ['https://img.pddpic.com/a.jpg'] },
-  ],
+  assets: [{ key: 'm1', kind: 'main', index: 0, candidates: ['https://img.pddpic.com/a.jpg'] }],
 };
 
 /** 模拟真实抓包：永远不结束，只在 signal 中止时退出 */
@@ -29,7 +27,10 @@ const instantSsr: DataSource = {
   },
 };
 
-function input(resolver: PlatformResolver, extra: Partial<Parameters<typeof resolveSnapshot>[0]> = {}) {
+function input(
+  resolver: PlatformResolver,
+  extra: Partial<Parameters<typeof resolveSnapshot>[0]> = {},
+) {
   return {
     url: new URL('https://mobile.yangkeduo.com/goods.html?goods_id=123456'),
     productId: '123456',
@@ -55,7 +56,10 @@ describe('resolveSnapshot', () => {
   afterEach(() => vi.useRealTimers());
 
   it('SSR 已成形时只给抓包一个收尾窗口，不等总超时', async () => {
-    const resolver: PlatformResolver = { detectBlocker: () => null, sources: [instantSsr, endlessCapture] };
+    const resolver: PlatformResolver = {
+      detectBlocker: () => null,
+      sources: [instantSsr, endlessCapture],
+    };
     const p = resolveSnapshot(input(resolver));
     await vi.advanceTimersByTimeAsync(CAPTURE_SETTLE_MS + 10);
     const res = await p;
@@ -67,10 +71,15 @@ describe('resolveSnapshot', () => {
     const hang: DataSource = {
       id: 'dom',
       run: () => ({
-        [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<ProductDraft>>(() => {}) }),
+        [Symbol.asyncIterator]: () => ({
+          next: () => new Promise<IteratorResult<ProductDraft>>(() => {}),
+        }),
       }),
     };
-    const resolver: PlatformResolver = { detectBlocker: () => null, sources: [hang, endlessCapture] };
+    const resolver: PlatformResolver = {
+      detectBlocker: () => null,
+      sources: [hang, endlessCapture],
+    };
     const p = resolveSnapshot(input(resolver, { partialTimeoutMs: 500 }));
     await vi.advanceTimersByTimeAsync(510);
     const res = await p;

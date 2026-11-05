@@ -304,6 +304,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       signal: job.controller.signal,
       log: log.scope(job.def.type),
       settings: {},
+      fs: gateway,
     };
 
     if (job.def.extra) {
@@ -371,7 +372,15 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     let record = job.record;
     record = markEnded(record, wasCanceled ? 'canceled' : computeFinalStatus(record), now());
 
-    if (!wasCanceled && job.def.finalize) {
+    /**
+     * 收尾**取消也要跑**（§9.11）。
+     *
+     * 旧实现是 `if (!wasCanceled && job.def.finalize)`：用户取消后已经落盘的文件
+     * 不会写进 .ecbox.json，再点「继续下载」时增量判断失效，同一张图会被当成新文件
+     * 另存为「01 (2).webp」。
+     * finalize 只记录 status==='ok' 的结果，所以取消时它只会补记真正写完的那些。
+     */
+    if (job.def.finalize) {
       const results = [...job.results.values()];
       try {
         await job.def.finalize(job.payload, results, { ...runContextFor(job), record });
@@ -414,6 +423,16 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     } catch {
       log.warn('任务参数不合法，拒绝提交', { type: record.type });
       throw new EcError('INTERNAL', { reason: 'payload-invalid' });
+    }
+
+    // requiresDir 的兜底：目录不可用时立刻整单失败，而不是让几百个工作项各失败一次。
+    // 正常情况下 bg 已经拦过一遍（它要开授权小窗），这里只防「直接调引擎」的路径。
+    if (def.requiresDir) {
+      const dir = await gateway.status().catch(() => null);
+      if (dir === null || dir.status !== 'ready') {
+        log.warn('目录不可用，拒绝提交', { type: record.type, status: dir?.status ?? 'unknown' });
+        throw new EcError('DIR_UNSET', { status: dir?.status ?? 'unknown' });
+      }
     }
 
     const submitted = scheduler.submit(record);
@@ -485,16 +504,27 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       if (only !== 'failed') return null;
       const record = jobs.get(jobId);
       if (!record) return null;
-      const failedKeys = new Set(record.failed.map((f) => f.itemKey).filter((k) => k !== ''));
-      if (failedKeys.size === 0) return null;
-      // 重新提交同一份 payload：.ecbox.json 会自动跳过已完成的文件（§9.11），
-      // 所以「重试失败项」等价于「再提交一次」，不必单独维护子集计划。
+      // 整单失败（目录丢失、全部候选 404）没有逐项记录，failed 里可能只有一条空 itemKey。
+      // 这种情况也要能重试，否则面板上的「重试」按钮永远是死的。
+      const hasFailures = record.failed.length > 0 || record.status === 'failed';
+      if (!hasFailures) return null;
+      if (record.status === 'running' || record.status === 'queued') return null;
+
+      const startedAt = now();
+      /**
+       * 重新提交同一份 payload：.ecbox.json 会自动跳过已完成的文件（§9.11），
+       * 所以「重试失败项」等价于「再提交一次」，不必单独维护子集计划。
+       *
+       * **dedupeKey 必须保持不变**：页面用 `平台:商品ID` 订阅进度，
+       * 旧实现给重试任务拼了 `#retry-<时间戳>` 后缀，于是新任务的进度事件
+       * 全部被 watchJobs 的过滤挡掉 —— 点了重试，任务确实在跑，面板却一动不动。
+       */
       const next = createJobRecord({
-        id: record.id + '-r' + now(),
+        id: record.id + '-r' + startedAt,
         type: record.type,
-        dedupeKey: record.dedupeKey + '#retry-' + now(),
+        dedupeKey: record.dedupeKey,
         payload: record.payload,
-        now: now(),
+        now: startedAt,
         ...(record.label === undefined ? {} : { label: record.label }),
         ...(record.tabId === undefined ? {} : { tabId: record.tabId }),
       });

@@ -91,8 +91,9 @@ export function AssetRow(props: AssetRowProps) {
       覆盖层在 zIndex 0，内容在 zIndex 1；非交互的文字设 pointerEvents:none，
       点击会穿透到覆盖层（§10.3 素材行交互）。
     */
-    <li
-      aria-label={label}
+    // 外层 <li> 由 AssetList 提供；这里必须用 div，否则 <li> 套 <li>，React 会报
+    // 「validateDOMNesting: <li> cannot appear as a descendant of <li>」。
+    <div
       style={{
         position: 'relative',
         display: 'flex',
@@ -204,6 +205,6 @@ export function AssetRow(props: AssetRowProps) {
           下载
         </button>
       ) : null}
-    </li>
+    </div>
   );
 }

@@ -65,6 +65,11 @@ export interface PlanContext {
   signal: AbortSignal;
   log: Logger;
   settings: unknown;
+  /**
+   * 写入网关。plan 阶段就要用它来**定位已有商品文件夹**（ADR-6：
+   * 索引 → `_ID` 后缀扫描 → 新建），否则商家一改标题就会多出一个文件夹。
+   */
+  fs: FsGateway;
 }
 
 export interface RunContext {
