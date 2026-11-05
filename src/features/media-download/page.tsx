@@ -196,17 +196,39 @@ export function MediaDownloadPanel({
     );
   };
 
-  /** 提交下载：页面侧只发意图，写入计划由 engine 生成（§8.6） */
+  /**
+   * 提交下载：页面侧只发意图，写入计划由 engine 生成（§8.6）。
+   *
+   * **必须处理返回值**：目录没授权时 bg 返回 { waiting: 'dir' } 并去开授权小窗。
+   * 如果不管这个返回值，一旦小窗被浏览器拦下（或用户没注意到），
+   * 页面上就完全不发生任何事，用户会以为「点了没反应」。
+   * 所以这里显式兜底：拿到 waiting 就主动开授权窗并给出可见反馈。
+   */
   const submit = (kinds: readonly AssetKind[], keys?: readonly string[]): void => {
-    void api.submitJob(
-      'media-download',
-      {
-        snapshot,
-        selection: { kinds: [...kinds], ...(keys === undefined ? {} : { keys: [...keys] }) },
-        settings,
-      },
-      { dedupeKey, label: `下载 ${snapshot.title}` },
-    );
+    void (async () => {
+      try {
+        const res = await api.submitJob(
+          'media-download',
+          {
+            snapshot,
+            selection: { kinds: [...kinds], ...(keys === undefined ? {} : { keys: [...keys] }) },
+            settings,
+          },
+          { dedupeKey, label: `下载 ${snapshot.title}` },
+        );
+        if (res && 'waiting' in res && res.waiting === 'dir') {
+          // bg 已经尝试开过小窗；这里只在它没开成时补一次，并告诉用户去哪儿操作
+          openGrant();
+          api.toast('请在弹出的小窗中选择保存位置');
+        }
+      } catch (e) {
+        // 提交失败也要让用户看到，而不是静默
+        api.toast('提交下载失败，请重试', {
+          action: { label: '重试', run: () => submit(kinds, keys) },
+        });
+        void e;
+      }
+    })();
   };
 
   const runAction = (action: PrimaryAction): void => {
