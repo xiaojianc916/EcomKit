@@ -131,3 +131,22 @@ grant 小窗拿的授权 → 存 IndexedDB → Offscreen 读回 → 写入，整
 - [ ] 原图规则实测（去掉 `imageMogr2` / `~tplv-…` 后尺寸是否更大）
 
 用户回传方式：把 `.phase0-raw/*.json` 放进 `fixtures-inbox/` 目录，我写 `scripts/phase0/import-fixtures.ts` 自动生成 `__fixtures__`。
+
+## 4. 构建产物在真实 Chrome 中的加载验证
+
+`node scripts/verify-build.mjs` 用 Playwright 把 `.output/chrome-mv3/` 加载进真实 Chrome：
+
+| 验证点 | 结果 |
+| --- | --- |
+| 扩展 ID | `jncbfkkbkknlcaegfjlkphohpefbpkmn` —— 与 `keys/extension-id.txt` **完全一致**，证明 manifest.key 生效、固定 ID 成立 |
+| Service Worker 启动 | ✅ `background.js` 起来了 |
+| manifest 版本 | ✅ MV3 |
+| 权限 | 只有 storage / offscreen / downloads / declarativeNetRequestWithHostAccess 四项，无 `<all_urls>`、无 cookies |
+| 内容脚本数量 | 2 个（bridge 在 MAIN、page 在 ISOLATED），注入范围只有两个平台的商品页 |
+| options.html | ✅ HTTP 200、React 渲染成功、无页面错误 |
+| popup.html | ✅ 同上 |
+| grant.html | ✅ 同上 |
+| 非商品页是否误注入 | ✅ 正确跳过（example.com 上没有 `ecbox-root`） |
+| Console 错误 | ✅ 无 |
+
+**结论**：v1 的扩展壳在真实浏览器里可用。剩下未覆盖的是需要在商品页上跑的完整下载链路（见 `docs/ACCEPTANCE.md` 的 A 系列）。
