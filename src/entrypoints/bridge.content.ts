@@ -12,10 +12,10 @@
  *
  * 和 ISOLATED 的通信全部走 CustomEvent，detail 一律 JSON 字符串（§6.3）。
  */
-import { PLATFORM_MATCHES } from '../platforms/registry';
+import { findPageKind, PLATFORM_MATCHES } from '../platforms/registry';
 import {
   bridgeEvent,
-  consumeBridgePrefix,
+  publishBridgePrefix,
   readPath,
   safeJsonCopy,
   type BridgeCaptureMessage,
@@ -24,7 +24,7 @@ import {
   type BridgeReadGlobalResult,
 } from '../kernel/messaging/page-bridge';
 
-/** 交给 MAIN 的抓取规则：**可序列化**，由 ISOLATED 通过 hello 事件下发 */
+/** 交给 MAIN 的抓取规则：**可序列化**（平台 manifest 是纯数据，MAIN 自己也能读） */
 interface RuntimeCaptureRule {
   id: string;
   urlPattern: string;
@@ -32,7 +32,13 @@ interface RuntimeCaptureRule {
   pageKinds: string[];
 }
 
+interface RuleMatcher {
+  rule: RuntimeCaptureRule;
+  re: RegExp;
+}
+
 const RING_SIZE = 60;
+const DEFAULT_MAX_BYTES = 3 * 1024 * 1024;
 
 export default defineContentScript({
   // 只在商品页注入（§13.2 最小注入面）：匹配范围由平台层 manifest 汇总生成
@@ -50,13 +56,18 @@ export default defineContentScript({
   },
 });
 
+/**
+ * 启动顺序（修正后）：
+ *   1. document_start：MAIN 生成前缀写到 <html data-ecbox-c>，交给稍后启动的 ISOLATED；
+ *   2. 同一时刻按当前 URL 从平台清单取出抓取规则，**立刻**包装 fetch/XHR —— 商品详情接口
+ *      经常在 document_idle 之前就返回，等 ISOLATED 来下发规则就错过了；
+ *   3. ISOLATED（document_idle）读走前缀后发 hello：MAIN 追加规则、回放环形缓冲、回 ready。
+ */
 function bootstrap(): void {
-  const prefix = consumeBridgePrefix(document);
-  if (!prefix) return; // ISOLATED 没准备好，什么也不做
+  const prefix = publishBridgePrefix(document);
 
   const ring: BridgeCaptureMessage[] = [];
-  let rules: RuntimeCaptureRule[] = [];
-  let started = false;
+  const matchers: RuleMatcher[] = [];
 
   const emit = (name: string, payload: unknown) => {
     try {
@@ -68,17 +79,32 @@ function bootstrap(): void {
     }
   };
 
-  // ISOLATED 下发页面类型和规则 → 才开始包装
+  // 原生 fetch 的源码必须在包装**之前**取，否则拿到的是包装函数自己的源码
+  const fetchSource = nativeSourceOf(window.fetch, 'function fetch() { [native code] }');
+
+  let tapInstalled = false;
+  const ensureTap = () => {
+    if (tapInstalled || matchers.length === 0) return;
+    tapInstalled = true;
+    installNetworkTap(prefix, matchers, ring, emit);
+    protectNativeToString(fetchSource);
+  };
+
+  // 1) 不等 ISOLATED：按当前 URL 立刻装载本页规则
+  addRules(matchers, rulesForLocation());
+  ensureTap();
+
+  // 2) ISOLATED 下发 hello（SPA 换页时可能追加规则）→ 回放缓冲 → ready
   document.addEventListener(bridgeEvent.hello(prefix), (ev) => {
     try {
       const hello = JSON.parse((ev as CustomEvent<string>).detail) as BridgeHello & {
-        rules: RuntimeCaptureRule[];
+        rules?: RuntimeCaptureRule[];
       };
-      rules = Array.isArray(hello.rules) ? hello.rules : [];
-      if (!started && rules.length > 0) {
-        started = true;
-        installNetworkTap(prefix, rules, ring, emit);
-        protectNativeToString();
+      addRules(matchers, Array.isArray(hello.rules) ? hello.rules : []);
+      ensureTap();
+      const wanted = new Set(hello.ruleIds ?? []);
+      for (const msg of ring) {
+        if (wanted.size === 0 || wanted.has(msg.ruleId)) emit(bridgeEvent.capture(prefix), msg);
       }
       emit(bridgeEvent.ready(prefix), { ok: true });
     } catch {
@@ -116,26 +142,56 @@ function bootstrap(): void {
   });
 }
 
+/** 当前 URL 命中的页面类型的抓取规则（平台清单是纯数据，MAIN 可以直接用） */
+function rulesForLocation(): RuntimeCaptureRule[] {
+  try {
+    const hit = findPageKind(new URL(location.href));
+    if (!hit) return [];
+    return hit.platform.capture
+      .filter((r) => r.pageKinds.includes(hit.kind))
+      .map((r) => ({
+        id: r.id,
+        urlPattern: r.urlPattern,
+        maxBytes: r.maxBytes ?? DEFAULT_MAX_BYTES,
+        pageKinds: r.pageKinds,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/** 追加规则（按 id 去重）；正则编译失败的规则直接丢掉 */
+function addRules(matchers: RuleMatcher[], rules: RuntimeCaptureRule[]): void {
+  for (const rule of rules) {
+    if (!rule || typeof rule.id !== 'string' || typeof rule.urlPattern !== 'string') continue;
+    if (matchers.some((m) => m.rule.id === rule.id)) continue;
+    try {
+      matchers.push({ rule, re: new RegExp(rule.urlPattern) });
+    } catch {
+      /* 忽略坏规则 */
+    }
+  }
+}
+
+function nativeSourceOf(fn: unknown, fallback: string): string {
+  try {
+    return Function.prototype.toString.call(fn as () => unknown);
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * 包装 fetch / XHR（方案 §7.4）。
  * 关键约束：**永远返回原始值**，克隆失败就当没发生过。
+ * matchers 是可变数组：hello 追加的规则对已经装好的包装立即生效。
  */
 function installNetworkTap(
   prefix: string,
-  rules: RuntimeCaptureRule[],
+  matchers: RuleMatcher[],
   ring: BridgeCaptureMessage[],
   emit: (name: string, payload: unknown) => void,
 ): void {
-  const matchers = rules
-    .map((r) => {
-      try {
-        return { rule: r, re: new RegExp(r.urlPattern) };
-      } catch {
-        return null;
-      }
-    })
-    .filter((m): m is { rule: RuntimeCaptureRule; re: RegExp } => m !== null);
-
   const pushCapture = (ruleId: string, url: string, text: string, at: number, dropped = false) => {
     const msg: BridgeCaptureMessage = { ruleId, url, json: dropped ? null : text, at };
     if (dropped) msg.dropped = true;
@@ -150,7 +206,7 @@ function installNetworkTap(
     const hit = matchRule(url);
     if (!hit) return;
     // 体积上限：超了就不克隆，保护页面性能（§7.4 表格最后一行）
-    if (text.length > (hit.rule.maxBytes ?? 3 * 1024 * 1024)) {
+    if (text.length > (hit.rule.maxBytes ?? DEFAULT_MAX_BYTES)) {
       pushCapture(hit.rule.id, url, '', Date.now(), true);
       return;
     }
@@ -264,20 +320,11 @@ function installNetworkTap(
 
 /**
  * 原生函数保护（§7.4 表格）：页面的反调试脚本常检查 `fn.toString().includes('native code')`。
- * 在 document_start 缓存 Function.prototype.toString，再让包装过的函数返回原生字符串。
+ * fetchSource 是包装之前取到的原生源码。
  */
-function protectNativeToString(): void {
+function protectNativeToString(fetchSource: string): void {
   try {
     const nativeToString = Function.prototype.toString;
-    const originalFetch = window.fetch;
-    const fetchSource = (() => {
-      try {
-        return nativeToString.call(originalFetch);
-      } catch {
-        return 'function fetch() { [native code] }';
-      }
-    })();
-
     Function.prototype.toString = function patchedToString(this: () => unknown) {
       if (this === window.fetch) return fetchSource;
       return nativeToString.call(this);

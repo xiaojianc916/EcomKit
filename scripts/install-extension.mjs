@@ -17,7 +17,7 @@
  * 想装进日常使用的 profile：加 --profile "C:\\Users\\<你>\\AppData\\Local\\Google\\Chrome\\User Data"
  * （注意：装之前必须完全退出那个浏览器的所有窗口，否则 profile 被占用会启动失败）
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,6 +57,54 @@ if (!exe) fail('找不到 ' + browser + ' 的可执行文件');
 if (!existsSync(join(extPath, 'manifest.json'))) fail('扩展目录里没有 manifest.json: ' + extPath);
 
 mkdirSync(profileDir, { recursive: true });
+
+// 检测这个 profile 是不是正在被占用 —— 占用时浏览器会直接退出，报错很难懂
+/** 从 basePort 往上找一个没人监听的端口 */
+async function findFreePort(basePort) {
+  const busy = new Set(
+    (await import('node:child_process')).execSync('netstat -ano -p tcp', { encoding: 'utf8' })
+      .split('\n')
+      .filter((l) => l.includes('LISTENING'))
+      .map((l) => Number(l.trim().split(/\s+/)[1]?.split(':').pop()))
+      .filter(Number.isFinite),
+  );
+  for (let p = basePort; p < basePort + 50; p++) {
+    if (!busy.has(p)) return p;
+  }
+  return basePort;
+}
+
+const running = spawnSync('powershell', [
+  '-NoProfile',
+  '-Command',
+  `Get-CimInstance Win32_Process -Filter "Name='chrome.exe' OR Name='msedge.exe'" |
+     Where-Object { $_.CommandLine -notlike '*--type=*' } |
+     ForEach-Object { $_.CommandLine }`,
+], { encoding: 'utf8' });
+
+const cmdlines = (running.stdout ?? '').split('\n').filter(Boolean);
+const normalizedProfile = profileDir.replace(/\\/g, '\\');
+const isDefaultProfile = /User Data\s*$/i.test(profileDir);
+const occupied = isDefaultProfile
+  ? cmdlines.some((c) => !/--user-data-dir=/.test(c)) || cmdlines.some((c) => c.includes('User Data'))
+  : cmdlines.some((c) => c.includes(normalizedProfile));
+
+if (occupied) {
+  console.error('');
+  console.error('❌ 这个 profile 正在被浏览器占用，请先完全退出它。');
+  console.error('   profile: ' + profileDir);
+  console.error('');
+  console.error('   关闭方法：任务栏右键浏览器图标 → 退出；');
+  console.error('   或在任务管理器里结束所有 chrome.exe 进程。');
+  console.error('');
+  console.error('   ⚠️ 如果你不想关浏览器，改用手动安装（30 秒，不用关）：');
+  console.error('     1. 地址栏打开 chrome://extensions');
+  console.error('     2. 右上角打开「开发者模式」');
+  console.error('     3. 点左上角「加载已解压的扩展程序」');
+  console.error('     4. 选择文件夹：' + extPath);
+  process.exit(1);
+}
+
 console.log('浏览器  :', exe);
 console.log('扩展目录:', extPath);
 console.log('profile :', profileDir);
@@ -75,7 +123,7 @@ child.unref();
 let wsUrl = null;
 for (let i = 0; i < 30; i++) {
   try {
-    const info = await (await fetch('http://127.0.0.1:' + cfg.port + '/json/version')).json();
+    const info = await (await fetch('http://127.0.0.1:' + PORT + '/json/version')).json();
     wsUrl = info.webSocketDebuggerUrl;
     if (wsUrl) break;
   } catch {
@@ -83,7 +131,12 @@ for (let i = 0; i < 30; i++) {
   }
   await sleep(500);
 }
-if (!wsUrl) fail('连不上浏览器的调试端口 ' + cfg.port + '（profile 可能被占用，请先完全退出该浏览器）');
+if (!wsUrl) fail('连不上浏览器的调试端口 ' + PORT + '（profile 可能被占用，请先完全退出该浏览器）');
+
+// 校验：连上的必须是我们刚启动的这个实例，而不是恰好占了同端口的别的 Chrome
+const versionInfo = await (await fetch('http://127.0.0.1:' + PORT + '/json/version')).json();
+const cdpCmd = versionInfo.webSocketDebuggerUrl;
+if (!cdpCmd) fail('拿不到 CDP 地址');
 
 // 关键：loadUnpacked 必须在 **browser target** 上调用，page target 会报 Method not available
 const ws = new WebSocket(wsUrl);

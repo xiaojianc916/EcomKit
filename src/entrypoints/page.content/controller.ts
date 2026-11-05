@@ -6,7 +6,11 @@
  *   2. 阻断检测（登录墙 / App 限制 / 已下架）
  *   3. 并行跑各数据源，渐进合并成 ProductSnapshot
  *   4. Port 连接、任务认领、目录状态
- *   5. 给 Shell 提供 props
+ *   5. 给 Shell 提供 props，并作为 React 的外部 store（subscribe / getVersion）
+ *
+ * 状态 → UI 的约定：所有页面状态都是这里的闭包变量，**改完必须 notify()**；
+ * index.tsx 用 useSyncExternalStore 订阅 version，每次 notify 都会用最新状态
+ * 重新算一遍 shellProps。旧实现只在挂载时 render 一次，props 永远停在 detecting。
  *
  * **按商品 ID 隔离**是这里最容易出错的地方：SPA 切换商品时旧会话的 draft 一律丢弃。
  */
@@ -30,7 +34,8 @@ import { connectJobPort } from '../../kernel/messaging/port';
 import { sendMessage } from '../../kernel/messaging/runtime';
 import { readSettings, watchSettings } from '../../kernel/settings/store';
 import { pageFeatures, featuresForPlatform } from '../../features/registry.page';
-import { createShellStore, siteKeyOf, type ShellStore } from '../../shell/store';
+import { createShellStore, HANDLE_DONE_TTL_MS, siteKeyOf, type ShellStore } from '../../shell/store';
+import type { AutoOpenMode, ThemeMode } from '../../kernel/settings/schema';
 import type { PrefsPort } from '../../shell/store';
 import { createPageBridge, type PageBridge } from './bridge-client';
 import { FeatureSlot } from './FeatureSlot';
@@ -54,6 +59,10 @@ export interface PageController {
   refreshDir(): Promise<DirState>;
   /** 页面侧已就绪的抓包数据源，给 resolver 用 */
   captures(ruleId: string): AsyncIterable<CapturedPayload>;
+  /** React 外部 store 协议：状态变化时回调 */
+  subscribe(listener: () => void): () => void;
+  /** 每次 notify 自增，useSyncExternalStore 的 getSnapshot */
+  getVersion(): number;
 }
 
 export function createPageController(ctx: ContentScriptContext): PageController {
@@ -73,6 +82,12 @@ export function createPageController(ctx: ContentScriptContext): PageController 
   let bridge: PageBridge | null = null;
   let disconnectPort: (() => void) | null = null;
   let store: ShellStore | null = null;
+  let uiSettings: { autoOpen: AutoOpenMode; theme: ThemeMode } = { autoOpen: 'panel', theme: 'system' };
+  /** 本商品是否已经按 §10.5 决定过形态：只决定一次，之后尊重用户手动收起/展开 */
+  let formDecided = false;
+  let version = 0;
+  const listeners = new Set<() => void>();
+  let doneTimer: ReturnType<typeof setTimeout> | null = null;
   let uiPrefs: Record<string, 'hidden' | 'handle' | 'panel'> = {};
   let handleYPrefs: Record<string, number> = {};
 
@@ -90,22 +105,58 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     },
   };
 
+  /**
+   * 整页只有**一个** shell store。旧实现在 start() 读完设置后又 new 了一个替换掉，
+   * 而 Shell 早已拿着第一个 —— 之后的设置、形态变化都作用在 UI 看不到的那个上。
+   * 设置改为写进同一个 store（theme）或在 syncForm 时显式传入（autoOpen）。
+   */
   function ensureStore(): ShellStore {
     if (store) return store;
     store = createShellStore({
       prefs,
       siteKey: siteKeyOf(location.hostname),
-      settings: { autoOpen: 'panel', theme: 'system' },
+      settings: uiSettings,
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
     });
+    // 识别出结果之前不显示任何东西（用户要求：识别成功才出现）
+    store.getState().setForm('hidden', { persist: false });
     return store;
   }
 
-  /** 状态变了就让 React 重渲染：通过 store 的 setViewport 触发订阅（幂等） */
+  function applySettings(next: { autoOpen: AutoOpenMode; theme: ThemeMode }): void {
+    uiSettings = next;
+    ensureStore().setState({ theme: next.theme });
+  }
+
+  /** 状态变了就通知 React（index.tsx 的 useSyncExternalStore） */
   function notify(): void {
-    const s = ensureStore();
-    s.getState().setViewport(window.innerWidth, window.innerHeight);
+    version += 1;
+    for (const l of [...listeners]) {
+      try {
+        l();
+      } catch (e) {
+        log.warn('listener threw', e);
+      }
+    }
+  }
+
+  /**
+   * 识别有结论时按 §10.5 决定形态（每个商品只决定一次）：
+   *   - 识别成功 → 按设置 autoOpen（默认展开面板；窄视口 / 站点偏好 → 把手）
+   *   - 登录墙 / 下架 / APP 限制 → 展开面板说明原因
+   *   - 什么都没识别到（PARSE_EMPTY）→ 保持隐藏，只在 popup 里能看到原因
+   */
+  function decideForm(): void {
+    if (formDecided) return;
+    const s = ensureStore().getState();
+    if (status === 'ready') {
+      formDecided = true;
+      s.syncForm({ blocked: false, autoOpen: uiSettings.autoOpen });
+    } else if (status === 'blocked' && blocker !== null && blocker !== 'PARSE_EMPTY') {
+      formDecided = true;
+      s.syncForm({ blocked: true, autoOpen: uiSettings.autoOpen });
+    }
   }
 
   async function evaluate(): Promise<void> {
@@ -123,6 +174,9 @@ export function createPageController(ctx: ContentScriptContext): PageController 
         abort = null;
         bridge?.dispose();
         bridge = null;
+        formDecided = false;
+        ensureStore().getState().setForm('hidden', { persist: false });
+        notify();
         unmatchedCb?.();
       }
       return;
@@ -142,6 +196,8 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     blocker = null;
     completeness = 'full';
     status = 'detecting';
+    formDecided = false;
+    ensureStore().getState().setForm('hidden', { persist: false });
     notify();
     matchedCb?.();
 
@@ -149,6 +205,7 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     if (!resolver) {
       blocker = 'PARSE_EMPTY';
       status = 'blocked';
+      decideForm();
       notify();
       return;
     }
@@ -158,6 +215,7 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     if (blockerCode) {
       blocker = blockerCode;
       status = 'blocked';
+      decideForm();
       notify();
       log.info('blocked', { code: blockerCode });
       return;
@@ -166,12 +224,14 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     status = 'resolving';
     notify();
 
-    // 桥：生成前缀、下发抓取规则、准备 readGlobal / captures
+    // 桥：读 MAIN 交来的前缀、下发 hello（MAIN 回放 document_start 以来的抓包）
+    bridge = null;
     try {
       bridge = createPageBridge(hit.platform, hit.kind);
     } catch (e) {
       log.debug('bridge unavailable', e);
     }
+    const sessionBridge = bridge;
 
     const localAbort = abort;
     try {
@@ -179,6 +239,7 @@ export function createPageController(ctx: ContentScriptContext): PageController 
         url,
         productId: hit.productId,
         pageKind: hit.kind,
+        platformId: hit.platform.id,
         platformName: hit.platform.displayName,
         resolver,
         document,
@@ -197,12 +258,13 @@ export function createPageController(ctx: ContentScriptContext): PageController 
           if (partial) {
             snapshot = partial;
             status = 'ready';
+            decideForm();
             notify();
           }
         },
-        ...(bridge ? { readGlobal: (p: string) => bridge!.readGlobal(p) } : {}),
-        captures: (ruleId: string) =>
-          bridge ? bridge.captures(ruleId) : emptyCaptures(),
+        ...(sessionBridge ? { readGlobal: (p: string) => sessionBridge.readGlobal(p) } : {}),
+        captures: (ruleId: string, signal: AbortSignal) =>
+          sessionBridge ? sessionBridge.captures(ruleId, signal) : emptyCaptures(),
       });
 
       if (localAbort.signal.aborted) return;
@@ -214,6 +276,7 @@ export function createPageController(ctx: ContentScriptContext): PageController 
         status = 'blocked';
         blocker = 'PARSE_EMPTY';
       }
+      decideForm();
       notify();
       log.info('resolve done', {
         productId: hit.productId,
@@ -225,6 +288,7 @@ export function createPageController(ctx: ContentScriptContext): PageController 
       const code = EcError.from(e).code;
       blocker = code;
       status = 'blocked';
+      decideForm();
       notify();
       log.warn('resolve failed', { code });
     }
@@ -250,29 +314,38 @@ export function createPageController(ctx: ContentScriptContext): PageController 
 
   return {
     start() {
+      ensureStore();
       void (async () => {
-        const settings = await readSettings();
-        store = createShellStore({
-          prefs,
-          siteKey: siteKeyOf(location.hostname),
-          settings: { autoOpen: settings.shell.autoOpen, theme: settings.shell.theme },
-          viewportWidth: window.innerWidth,
-          viewportHeight: window.innerHeight,
-        });
-        notify();
+        try {
+          const settings = await readSettings();
+          applySettings({ autoOpen: settings.shell.autoOpen, theme: settings.shell.theme });
+          notify();
+        } catch (e) {
+          log.debug('readSettings failed, keep defaults', e);
+        }
       })();
 
       ctx.addEventListener(window, 'wxt:locationchange', () => scheduleEvaluate());
-      ctx.addEventListener(window, 'resize', () => notify());
+      ctx.addEventListener(window, 'resize', () => {
+        ensureStore().getState().setViewport(window.innerWidth, window.innerHeight);
+      });
 
       disconnectPort = connectJobPort({
         onMessage: (msg: PortMessage) => {
           if (msg.type === 'job-progress' || msg.type === 'job-done') {
             job = msg.job;
             notify();
+            // 把手的「完成」对勾只保留 3 秒：到点再刷新一次 now
+            if (msg.type === 'job-done') {
+              if (doneTimer) clearTimeout(doneTimer);
+              doneTimer = setTimeout(() => notify(), HANDLE_DONE_TTL_MS + 50);
+            }
           } else if (msg.type === 'dir-changed') {
             dir = msg.dir;
             notify();
+          } else if (msg.type === 'panel-toggle') {
+            // 工具栏快捷键 Alt+Shift+E / popup「在页面中打开」
+            if (match) ensureStore().getState().togglePanel();
           }
         },
         onConnect() {
@@ -286,7 +359,9 @@ export function createPageController(ctx: ContentScriptContext): PageController 
           sendResponse({
             url: location.href,
             matched: match !== null,
-            ...(match ? { pageKind: match.pageKind, platform: match.platform } : {}),
+            ...(match
+              ? { pageKind: match.pageKind, platform: match.platform, productId: match.productId }
+              : {}),
             ...(snapshot ? { snapshot } : {}),
             status,
             ...(blocker ? { blocker } : {}),
@@ -297,8 +372,8 @@ export function createPageController(ctx: ContentScriptContext): PageController 
       });
 
       watchSettings((s) => {
-        ensureStore().getState().setViewport(window.innerWidth, window.innerHeight);
-        void s;
+        applySettings({ autoOpen: s.shell.autoOpen, theme: s.shell.theme });
+        notify();
       });
 
       void refreshDir();
@@ -308,8 +383,10 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     dispose() {
       abort?.abort();
       if (routeTimer) clearTimeout(routeTimer);
+      if (doneTimer) clearTimeout(doneTimer);
       disconnectPort?.();
       bridge?.dispose();
+      listeners.clear();
     },
 
     onMatched(cb) {
@@ -318,6 +395,13 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     onUnmatched(cb) {
       unmatchedCb = cb;
     },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getVersion: () => version,
     current: () => match,
     snapshot: () => snapshot,
     refreshDir,

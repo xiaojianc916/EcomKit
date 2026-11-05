@@ -25,21 +25,34 @@ export function PopupApp() {
   const [checked, setChecked] = useState<Set<AssetKind>>(new Set(KIND_ORDER));
 
   useEffect(() => {
-    void (async () => {
+    // popup 打开时页面可能还在识别：识别中就每 400ms 再问一次，直到有结论（最多约 12 秒）。
+    // 旧实现只问一次，打开得早就永远停在「正在识别…」。
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let tries = 0;
+    const poll = async () => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab?.id) {
-          setLoading(false);
+          if (!cancelled) setLoading(false);
           return;
         }
         const s = await sendMessage('shell.getTabState', { tabId: tab.id });
+        if (cancelled) return;
         setState(s);
+        const pending = s.matched && (s.status === 'detecting' || s.status === 'resolving');
+        if (pending && tries++ < 30) timer = setTimeout(() => void poll(), 400);
       } catch {
-        setState(null);
+        if (!cancelled) setState(null);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    })();
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const counts = countAssets(state);
@@ -94,9 +107,10 @@ export function PopupApp() {
       </header>
       <div className="pp__body">
         <p className="pp__title" title={state.snapshot?.title ?? ''}>
-          {state.snapshot?.title ?? '正在识别…'}
+          {state.snapshot?.title ??
+            (state.status === 'blocked' ? '没有识别到商品数据' : '正在识别…')}
         </p>
-        <p className="pp__meta">ID {state.snapshot?.productId ?? '—'}</p>
+        <p className="pp__meta">ID {state.snapshot?.productId ?? state.productId ?? '—'}</p>
         {KIND_ORDER.map((kind) => (
           <label key={kind} className="pp__row">
             <input

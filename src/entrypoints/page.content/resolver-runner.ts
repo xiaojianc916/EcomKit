@@ -4,22 +4,33 @@
  * 并行跑各数据源的 AsyncIterable，每产出一次 draft 就合进 DraftAccumulator，
  * 由 controller 决定什么时候把半成品推给 UI。
  *
- * 两条退出条件：
+ * 三条退出条件（都是**真的退出**，不是只记个标志位）：
  *   - 所有源都结束了 → completeness = 'full'
- *   - 8 秒到了但已经拿到标题和主图 → completeness = 'partial'（§7.2 状态机）
+ *   - 只剩抓包源还在等、且已经能拼出快照 → 再等 CAPTURE_SETTLE_MS 收尾 → 'full'
+ *     （抓包是无限流，没有这一条就只能等到总超时）
+ *   - partialTimeoutMs 到了 → 中止所有源 → 'partial'（§7.2 状态机）
+ *
+ * 旧实现的问题：超时只设了 timeoutHit = true，`await Promise.all(sources)` 仍然等着
+ * 永不结束的抓包流，resolveSnapshot 永远不返回，状态卡在 resolving。
  */
 import type { CapturedPayload, PlatformResolver, ResolveContext } from '../../platforms/types';
-import type { ProductDraft, ProductSnapshot } from '../../kernel/model/product';
+import type { PlatformId, ProductDraft, ProductSnapshot } from '../../kernel/model/product';
 import { DraftAccumulator } from '../../platforms/shared/merge';
 import { createLogger } from '../../kernel/log/logger';
 import { readInlineGlobal } from '../../platforms/shared/inline-ssr';
+import { readPath } from '../../kernel/messaging/page-bridge';
 
 const log = createLogger('resolver-runner');
+
+/** 结构化来源都结束、快照已成形后，给抓包源的收尾窗口 */
+export const CAPTURE_SETTLE_MS = 1200;
 
 export interface ResolveInput {
   url: URL;
   productId: string;
   pageKind: string;
+  /** 平台 id（以它为准）；旧调用方不传时才按 origin 猜 */
+  platformId?: PlatformId;
   platformName: string;
   resolver: PlatformResolver;
   document: Document;
@@ -27,10 +38,10 @@ export interface ResolveInput {
   partialTimeoutMs: number;
   /** 每产出一份合并且能构成快照时就回调一次，UI 渐进更新 */
   onProgress(draft: ProductDraft, acc: DraftAccumulator): void;
-  /** 读取全局变量（走 bridge）；不传时退化为直接读 window（同 world 情况下不可用） */
+  /** 读取全局变量（走 bridge）；不传时只读内联 SSR */
   readGlobal?(path: string): Promise<unknown>;
-  /** 抓包数据流；不传时该源直接结束 */
-  captures?(ruleId: string): AsyncIterable<CapturedPayload>;
+  /** 抓包数据流；不传时该源直接结束。signal 中止时流必须结束 */
+  captures?(ruleId: string, signal: AbortSignal): AsyncIterable<CapturedPayload>;
 }
 
 export interface ResolveResult {
@@ -39,25 +50,42 @@ export interface ResolveResult {
   sources: string[];
 }
 
+const ABORTED = Symbol('aborted');
+
 export async function resolveSnapshot(input: ResolveInput): Promise<ResolveResult> {
-  const { signal, resolver, productId, pageKind, platformName, url, document: doc } = input;
+  const { signal, resolver, productId, pageKind, url, document: doc } = input;
+
+  // 本轮识别的截止信号：外部中止（换商品）/ 总超时 / 收尾窗口结束，任一触发都中止所有源
+  const deadline = new AbortController();
+  const onOuterAbort = () => deadline.abort();
+  if (signal.aborted) deadline.abort();
+  else signal.addEventListener('abort', onOuterAbort, { once: true });
+
+  const abortedPromise = new Promise<typeof ABORTED>((resolve) => {
+    if (deadline.signal.aborted) resolve(ABORTED);
+    else deadline.signal.addEventListener('abort', () => resolve(ABORTED), { once: true });
+  });
 
   const ctx: ResolveContext = {
     url,
     productId,
     pageKind,
     document: doc,
-    signal,
+    signal: deadline.signal,
     log: {
       debug: (m, d) => log.debug(m, d),
       info: (m, d) => log.info(m, d),
     },
     readGlobal: async (path: string) => {
+      // 快路径：SSR 数据是内联 <script> 里的 JSON，ISOLATED 直接读文本即可，0 等待
+      const inline = readInlineSsr(doc, path);
+      if (inline !== undefined) return inline;
+      // 慢路径：内联读不到（不是 JSON 字面量 / 由 JS 生成）再问 MAIN
       if (input.readGlobal) return input.readGlobal(path);
-      // 没有 bridge 时退回同步读：只在我们和被解析页面同 world 的情况下可行
-      return readInlineGlobal(doc, path);
+      return undefined;
     },
-    captures: (ruleId: string) => (input.captures ? input.captures(ruleId) : emptyStream()),
+    captures: (ruleId: string) =>
+      input.captures ? input.captures(ruleId, deadline.signal) : emptyStream(),
   };
 
   const acc = new DraftAccumulator();
@@ -65,7 +93,7 @@ export async function resolveSnapshot(input: ResolveInput): Promise<ResolveResul
   const producedSources = new Set<string>();
 
   const base = {
-    platform: guessPlatform(url.origin, platformName),
+    platform: input.platformId ?? guessPlatform(url.origin),
     pageKind,
     productId,
     capturedAt: Date.now(),
@@ -76,46 +104,75 @@ export async function resolveSnapshot(input: ResolveInput): Promise<ResolveResul
   let timeoutHit = false;
   const timer = setTimeout(() => {
     timeoutHit = true;
+    deadline.abort();
   }, input.partialTimeoutMs);
 
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  const maybeSettle = () => {
+    if (settleTimer !== null || deadline.signal.aborted) return;
+    const pending = resolver.sources.filter((s) => !finishedSources.has(s.id));
+    if (pending.length === 0 || !pending.every((s) => s.id === 'capture')) return;
+    if (acc.toSnapshot(base) === null) return;
+    settleTimer = setTimeout(() => deadline.abort(), CAPTURE_SETTLE_MS);
+  };
+
   const consume = async (source: PlatformResolver['sources'][number]) => {
+    let it: AsyncIterator<ProductDraft> | null = null;
     try {
-      for await (const draft of source.run(ctx)) {
-        if (signal.aborted) return;
+      it = source.run(ctx)[Symbol.asyncIterator]();
+      while (true) {
+        const next = it.next();
+        next.catch(() => {}); // 输给截止信号后的 rejection 不要变成 unhandled
+        const step = await Promise.race([next, abortedPromise]);
+        if (step === ABORTED) {
+          void it.return?.()?.catch?.(() => {});
+          return;
+        }
+        if (step.done) return;
         producedSources.add(source.id);
-        acc.add(draft);
-        input.onProgress(draft, acc);
+        acc.add(step.value);
+        input.onProgress(step.value, acc);
+        maybeSettle(); // 抓包源自己产出了第一份可用快照时，也要开始收尾计时
       }
     } catch (e) {
       log.debug('source failed', { source: source.id, error: String(e) });
     } finally {
       finishedSources.add(source.id);
+      maybeSettle();
     }
   };
 
   // 并行跑所有源；DOM 源本身会等 DOMContentLoaded
   await Promise.all(resolver.sources.map((s) => consume(s)));
   clearTimeout(timer);
+  if (settleTimer !== null) clearTimeout(settleTimer);
+  signal.removeEventListener('abort', onOuterAbort);
 
   if (signal.aborted) return { snapshot: null, completeness: 'partial', sources: [] };
 
   const snapshot = acc.toSnapshot(base);
-  const killed = timeoutHit && finishedSources.size < resolver.sources.length;
   return {
     snapshot,
-    completeness: killed ? 'partial' : 'full',
+    completeness: timeoutHit ? 'partial' : 'full',
     sources: [...producedSources],
   };
+}
+
+/** 'rawData.store.initDataObj' → 先内联读 rawData，再按剩余路径取 */
+function readInlineSsr(doc: Document, path: string): unknown {
+  const [head, ...rest] = path.split('.');
+  if (!head) return undefined;
+  const root = readInlineGlobal(doc, head);
+  if (root === undefined || rest.length === 0) return root;
+  return readPath(root, rest.join('.'));
 }
 
 async function* emptyStream(): AsyncIterable<CapturedPayload> {
   // 显式空流，避免调用方到处判 undefined
 }
 
-/** 从 origin 猜平台 id；猜不到就用 manifest 里的 displayName 反查 */
-function guessPlatform(origin: string, _platformName: string): ProductSnapshot['platform'] {
-  if (/yangkeduo|pinduoduo/i.test(origin)) return 'pinduoduo';
+/** 兜底：调用方没给 platformId 时按 origin 猜 */
+function guessPlatform(origin: string): ProductSnapshot['platform'] {
   if (/jinritemai|douyin/i.test(origin)) return 'douyin';
-  // 兜底：'pinduoduo' 是更常见的那个，宁可 ID 错也希望别抛异常
   return 'pinduoduo';
 }

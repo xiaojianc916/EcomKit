@@ -163,8 +163,16 @@ export interface ShellStoreActions {
   setHandleY(y: number): void;
   setActiveFeature(id: string): void;
   setViewport(width: number, height: number): void;
-  /** 识别结果出来后按 §10.5 决定形态；autoOpen 不传就用创建 store 时的设置 */
-  syncForm(input: Omit<ResolveFormInput, 'saved' | 'autoOpen'> & { autoOpen?: AutoOpenMode }): void;
+  /**
+   * 识别结果出来后按 §10.5 决定形态。
+   * autoOpen 不传就用创建 store 时的设置；narrow 不传就按 store 里的视口宽度算。
+   */
+  syncForm(
+    input: Omit<ResolveFormInput, 'saved' | 'autoOpen' | 'narrow'> & {
+      autoOpen?: AutoOpenMode;
+      narrow?: boolean;
+    },
+  ): void;
 }
 
 export type ShellStore = StoreApi<ShellStoreState & ShellStoreActions>;
@@ -244,7 +252,7 @@ export function createShellStore(opts: CreateShellStoreOptions): ShellStore {
         autoOpen: input.autoOpen ?? opts.settings.autoOpen,
         saved: get().saved.form,
         blocked: input.blocked,
-        narrow: isViewportNarrow(get().viewportWidth),
+        narrow: input.narrow ?? isViewportNarrow(get().viewportWidth),
       });
       set({ form });
     },

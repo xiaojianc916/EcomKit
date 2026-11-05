@@ -5,21 +5,27 @@
  * 1. `detail` 一律是 JSON 字符串 —— structured clone 传不了复杂对象跨 world，
  *    字符串还有个好处：伪造者塞进来的东西必须先能 JSON.parse 成功。
  * 2. 事件名带每次注入随机生成的前缀 —— 页面脚本想监听都猜不到（不是安全边界，是降低干扰）。
- * 3. 前缀的交接：ISOLATED 在 document_start 把前缀写进 documentElement.dataset，
- *    MAIN 读到后**立即删除属性**，之后双方只用带前缀的事件名通信。
+ * 3. 前缀的交接方向是 **MAIN → ISOLATED**：
+ *    MAIN 在 document_start 运行（最早），生成前缀写进 documentElement 的属性，
+ *    并**立刻**开始抓包（详情接口往往在 document_idle 之前就返回了）；
+ *    ISOLATED 在 document_idle 才运行，读到前缀后**立即删除属性**，再发 hello，
+ *    MAIN 收到 hello 后回放已缓冲的抓包并回 ready。
+ *
+ *    旧实现方向反了（ISOLATED 在 document_idle 才写前缀，而 MAIN 在 document_start
+ *    就去读）→ MAIN 永远读不到前缀、整条桥不工作，readGlobal 只能等 3 秒超时。
  */
 
 export const BRIDGE_CHANNEL_ATTR = 'data-ecbox-c';
 export const BRIDGE_PREFIX_LEN = 8;
 
-/** ISOLATED 侧：生成前缀并交给 MAIN（MAIN 读到后会自己删掉这个属性） */
+/** MAIN 侧（document_start）：生成前缀写到 documentElement 上，交给稍后启动的 ISOLATED */
 export function publishBridgePrefix(doc: Document): string {
   const prefix = randomPrefix();
   doc.documentElement.setAttribute(BRIDGE_CHANNEL_ATTR, prefix);
   return prefix;
 }
 
-/** MAIN 侧：读前缀并立即清理，避免被页面后续脚本看到 */
+/** ISOLATED 侧（document_idle）：读前缀并立即清理，避免被页面后续脚本看到 */
 export function consumeBridgePrefix(doc: Document): string | null {
   const el = doc.documentElement;
   const prefix = el.getAttribute(BRIDGE_CHANNEL_ATTR);
@@ -41,9 +47,9 @@ export const bridgeEvent = {
   readGlobalResult: (prefix: string) => `ecbox:${prefix}:read-global-result`,
   /** MAIN → ISOLATED：抓到一条命中规则的响应 */
   capture: (prefix: string) => `ecbox:${prefix}:capture`,
-  /** ISOLATED → MAIN：告诉 MAIN 当前页面类型，决定装载哪些抓取规则 */
+  /** ISOLATED → MAIN：告诉 MAIN 当前页面类型（可追加抓取规则），MAIN 收到后回放缓冲 */
   hello: (prefix: string) => `ecbox:${prefix}:hello`,
-  /** MAIN → ISOLATED：启动完成，可以开始发事件了 */
+  /** MAIN → ISOLATED：hello 已处理、缓冲已回放 */
   ready: (prefix: string) => `ecbox:${prefix}:ready`,
 } as const;
 

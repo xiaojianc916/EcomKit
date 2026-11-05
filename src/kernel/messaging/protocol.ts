@@ -27,6 +27,8 @@ export interface TabState {
   matched: boolean;
   pageKind?: string;
   platform?: string;
+  /** URL 里解析出的商品 ID：识别完成前 snapshot 还没有，popup 先显示它 */
+  productId?: string;
   snapshot?: ProductSnapshot;
   status: 'idle' | 'detecting' | 'resolving' | 'ready' | 'blocked';
   blocker?: ErrorCode;
