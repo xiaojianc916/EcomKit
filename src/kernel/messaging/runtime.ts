@@ -43,8 +43,7 @@ const CONTENT_SCRIPT_ALLOWED = new Set<string>([
 const EXTENSION_PAGE_ALLOWED = new Set<string>([
   ...CONTENT_SCRIPT_ALLOWED,
   'grant.getInit',
-  'grant.persist',
-  'grant.getHandle',
+  'grant.persisted',
   'grant.close',
   'fs.changed',
 ]);
@@ -160,7 +159,6 @@ const PAYLOAD_SCHEMAS: Record<string, z.ZodTypeAny> = {
   'engine.call': FeatureCallSchema,
   'engine.enqueue': EngineEnqueueSchema,
   'engine.cancel': JobIdSchema,
-  'grant.persist': PersistHandleSchema,
 };
 
 export function validatePayload(method: string, data: unknown): unknown {

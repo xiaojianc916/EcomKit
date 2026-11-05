@@ -63,10 +63,12 @@ export interface ProtocolMap {
 
   /** 授权小窗：读取本次打开的模式（§9.4） */
   'grant.getInit'(): { mode: 'unset' | 'needs-grant' | 'gone' | 'change'; currentName?: string };
-  /** 授权小窗：把用户选中的句柄交给 bg 落库 */
-  'grant.persist'(p: { handle: FileSystemDirectoryHandle }): void;
-  /** 授权小窗：取回上次存的句柄，用于 requestPermission */
-  'grant.getHandle'(): FileSystemDirectoryHandle | null;
+  /**
+   * 授权小窗：句柄已存进 IndexedDB，通知 bg 刷新状态。
+   * **不携带句柄本身** —— FileSystemDirectoryHandle 过 runtime 消息会退化成没有方法的空对象
+   * （已实测），所以句柄只能由小窗自己存、由各上下文各自从 IndexedDB 读。
+   */
+  'grant.persisted'(p: { name: string }): void;
   /** 授权小窗：自己关掉（用户取消） */
   'grant.close'(): void;
 

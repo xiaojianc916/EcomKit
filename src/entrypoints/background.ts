@@ -89,10 +89,17 @@ export default defineBackground(() => {
   });
 
   onMessage('grant.getInit', async () => readGrantInit());
-  onMessage('grant.persist', async ({ data }) => {
-    await persistHandle(data.handle);
+  onMessage('grant.persisted', async ({ data }) => {
+    // 句柄已经由授权小窗自己存进 IndexedDB（它和 bg/offscreen 同源共享），
+    // 这里只需要让 offscreen 丢掉缓存的旧句柄并重判状态。
+    log.info('root handle persisted', { name: data.name });
+    const state = await engineCall<DirState>('engine.fsChanged', undefined).catch(() => ({
+      status: 'ready' as const,
+      name: data.name,
+    }));
+    ports.broadcast({ type: 'dir-changed', dir: state });
+    await maybeResumePendingIntent();
   });
-  onMessage('grant.getHandle', async () => loadHandle());
   onMessage('grant.close', async () => {
     await clearPendingIntent();
   });
@@ -284,22 +291,6 @@ async function readGrantInit(): Promise<{ mode: GrantMode; currentName?: string 
   const raw = (reason['grant.reason'] as GrantMode | undefined) ?? dir.status;
   const mode: GrantMode = raw === 'ready' ? 'unset' : (raw as GrantMode);
   return dir.name ? { mode, currentName: dir.name } : { mode };
-}
-
-async function persistHandle(handle: FileSystemDirectoryHandle): Promise<void> {
-  await engineCall('engine.call', {
-    feature: 'core',
-    method: 'persistHandle',
-    args: { handle },
-  });
-}
-
-async function loadHandle(): Promise<FileSystemDirectoryHandle | null> {
-  return (await engineCall('engine.call', {
-    feature: 'core',
-    method: 'loadHandle',
-    args: {},
-  })) as FileSystemDirectoryHandle | null;
 }
 
 /** 授权完成后自动续上原来那次下载（§9.4：从点下载到开始下载只多一点「选择文件夹」） */

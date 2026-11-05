@@ -66,7 +66,7 @@ describe('guardSender（§6.3 约定 1）', () => {
   });
 
   it('扩展页面可以调授权小窗的方法', () => {
-    for (const method of ['grant.getInit', 'grant.persist', 'grant.getHandle', 'grant.close']) {
+    for (const method of ['grant.getInit', 'grant.persisted', 'grant.close']) {
       expect(guardSender(method, fromPopup()).ok, method).toBe(true);
     }
   });

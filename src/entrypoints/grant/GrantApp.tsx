@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { EcError } from '../../kernel/errors/ec-error';
 import type { DirState } from '../../kernel/fs/types';
 import { sendMessage } from '../../kernel/messaging/runtime';
+import { loadRootHandle, saveRootHandle } from '../../kernel/fs/handle-store';
 
 /**
  * 授权小窗（方案 §9.4）。
@@ -71,7 +72,10 @@ export function GrantApp() {
         startIn: 'documents',
       })) as FileSystemDirectoryHandle;
 
-      await sendMessage('grant.persist', { handle });
+      // 关键：句柄**不能**通过 runtime 消息传递（实测传过去会变成没有方法的空对象），
+      // 只能在本上下文自己存进 IndexedDB。小窗和 bg / offscreen 同属扩展源，共享同一个库。
+      await saveRootHandle(handle);
+      await sendMessage('grant.persisted', { name: handle.name });
       await finish({ status: 'ready', name: handle.name });
     } catch (e) {
       const code = e instanceof DOMException ? e.name : 'Unknown';
@@ -91,7 +95,8 @@ export function GrantApp() {
     setBusy(true);
     setError(null);
     try {
-      const handle = (await sendMessage('grant.getHandle')) as FileSystemDirectoryHandle | null;
+      // 同样不能走消息：直接读 IndexedDB
+      const handle = await loadRootHandle();
       if (!handle) {
         setInit({ mode: 'gone' });
         setError('找不到上次选择的文件夹，请重新选择');
