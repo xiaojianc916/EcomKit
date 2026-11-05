@@ -10,6 +10,7 @@
  *
  * **按商品 ID 隔离**是这里最容易出错的地方：SPA 切换商品时旧会话的 draft 一律丢弃。
  */
+import { createElement } from 'react';
 import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import type { ErrorCode } from '../../kernel/errors/codes';
 import type { DirState } from '../../kernel/fs/types';
@@ -32,6 +33,7 @@ import { pageFeatures, featuresForPlatform } from '../../features/registry.page'
 import { createShellStore, siteKeyOf, type ShellStore } from '../../shell/store';
 import type { PrefsPort } from '../../shell/store';
 import { createPageBridge, type PageBridge } from './bridge-client';
+import { FeatureSlot } from './FeatureSlot';
 import { resolveSnapshot } from './resolver-runner';
 
 const log = createLogger('page.controller');
@@ -365,8 +367,17 @@ export function createPageController(ctx: ContentScriptContext): PageController 
           match = null;
           void evaluate();
         },
-        renderFeature() {
-          return null;
+        renderFeature(id, context) {
+          const feature = features.find((f) => f.manifest.id === id);
+          if (!feature) return null;
+          return createElement(FeatureSlot, {
+            feature,
+            snapshot,
+            status: status === 'ready' ? 'ready' : 'resolving',
+            dir: context.dir,
+            job: context.job,
+            api,
+          });
         },
       };
     },
