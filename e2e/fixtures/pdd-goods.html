@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>拼多多商品详情（E2E fixture）</title>
+    <!--
+      E2E 用的结构等价页面：把真实拼多多商品页的 SSR 数据形状复刻出来，
+      但不含任何真实商品数据。URL 仍用 mobile.yangkeduo.com 的形态，
+      由 Playwright 的 context.route 拦截并替换成本文件内容。
+    -->
+    <style>
+      html { font-size: 20px; }   /* 模拟移动版页面改 html font-size，验证 rem→px 插件 */
+      body { font-family: sans-serif; margin: 0; }
+      .wrap { max-width: 720px; margin: 0 auto; }
+      .gallery img { width: 160px; height: 160px; object-fit: cover; }
+    </style>
+    <script>
+      window.rawData = {
+        store: {
+          initDataObj: {
+            needLogin: false,
+            goods: {
+              goodsID: 482319937501,
+              goodsName: '夏季新款显瘦连衣裙女小个子法式复古方领泡泡袖碎花裙',
+              topGallery: [
+                'https://img.pddpic.com/e2e/main-01.jpg?imageView2/2/w/800/q/80',
+                'https://img.pddpic.com/e2e/main-02.jpg?imageView2/2/w/800/q/80',
+                'https://img.pddpic.com/e2e/main-03.jpg?imageView2/2/w/800/q/80',
+                'https://img.pddpic.com/e2e/main-04.jpg?imageView2/2/w/800/q/80'
+              ],
+              detailGallery: [
+                { url: 'https://img.pddpic.com/e2e/detail-01.jpg', width: 800, height: 1200 },
+                { url: 'https://img.pddpic.com/e2e/detail-02.jpg', width: 800, height: 1200 },
+                { url: 'https://img.pddpic.com/e2e/detail-03.jpg', width: 800, height: 1200 }
+              ],
+              skus: [
+                { skuID: 1, thumbUrl: 'https://img.pddpic.com/e2e/sku-apricot.jpg',
+                  specs: [{ spec_key: '颜色', spec_value: '杏色' }, { spec_key: '尺码', spec_value: 'M' }] },
+                { skuID: 2, thumbUrl: 'https://img.pddpic.com/e2e/sku-black.jpg',
+                  specs: [{ spec_key: '颜色', spec_value: '黑色' }, { spec_key: '尺码', spec_value: 'L' }] }
+              ],
+              videoGallery: [
+                { url: 'https://video.pddpic.com/e2e/main-video.mp4', duration: 32 }
+              ]
+            },
+            mall: { mallName: 'E2E 测试店铺' }
+          }
+        }
+      };
+    </script>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>E2E fixture 商品页</h1>
+      <div class="gallery">
+        <img src="https://img.pddpic.com/e2e/main-01.jpg" alt="" />
+        <img src="https://img.pddpic.com/e2e/main-02.jpg" alt="" />
+      </div>
+    </div>
+  </body>
+</html>

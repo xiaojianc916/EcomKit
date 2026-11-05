@@ -1,0 +1,117 @@
+{
+  "platforms": [
+    {
+      "id": "douyin",
+      "displayName": "抖音",
+      "brandColor": "#161823",
+      "brandRing": "#25F4EE",
+      "pageKinds": [
+        {
+          "kind": "dy.haohuo",
+          "matches": [
+            "https://haohuo.jinritemai.com/ecommerce/trade/detail/index.html*"
+          ],
+          "productIdParam": "id"
+        },
+        {
+          "kind": "dy.haohuo",
+          "matches": [
+            "https://haohuo.jinritemai.com/views/product/*"
+          ],
+          "productIdParam": "id"
+        }
+      ],
+      "cdnHosts": [
+        "*.ecombdimg.com",
+        "*.byteimg.com",
+        "*.douyinpic.com",
+        "*.douyinvod.com",
+        "*.bytecdn.cn",
+        "*.ibyteimg.com"
+      ],
+      "capture": [
+        {
+          "id": "dy.product-pack",
+          "pageKinds": [
+            "dy.haohuo"
+          ],
+          "urlPattern": "/aweme/v2/shop/promotion/pack/h5/"
+        },
+        {
+          "id": "dy.product-detail",
+          "pageKinds": [
+            "dy.haohuo"
+          ],
+          "urlPattern": "/ecom/product/detail/.*"
+        }
+      ],
+      "globals": [
+        "__INITIAL_STATE__",
+        "_ROUTER_DATA",
+        "__SSR_DATA__",
+        "__INITIAL_SSR_STATE__"
+      ],
+      "supportsMobileMode": false
+    },
+    {
+      "id": "pinduoduo",
+      "displayName": "拼多多",
+      "brandColor": "#E02E24",
+      "pageKinds": [
+        {
+          "kind": "pdd.goods",
+          "matches": [
+            "https://mobile.yangkeduo.com/goods*.html*",
+            "https://mobile.pinduoduo.com/goods*.html*"
+          ],
+          "productIdParam": "goods_id"
+        }
+      ],
+      "cdnHosts": [
+        "*.pddpic.com",
+        "*.yangkeduo.com"
+      ],
+      "capture": [
+        {
+          "id": "pdd.goods-detail",
+          "pageKinds": [
+            "pdd.goods"
+          ],
+          "urlPattern": "/proxy/api/.*(goods|detail|sku|mall).*"
+        }
+      ],
+      "globals": [
+        "rawData",
+        "rawData.store",
+        "rawData.store.initDataObj",
+        "_oakRawData"
+      ]
+    }
+  ],
+  "features": [
+    {
+      "id": "media-download",
+      "title": "素材下载",
+      "icon": "download",
+      "order": 10,
+      "requires": [
+        "product.basic"
+      ],
+      "commands": [
+        {
+          "id": "download-checked",
+          "title": "下载勾选的素材",
+          "suggestedKey": "Alt+Shift+D"
+        }
+      ]
+    }
+  ],
+  "featureCommands": {
+    "download-checked": {
+      "suggested_key": {
+        "default": "Alt+Shift+D"
+      },
+      "description": "下载勾选的素材"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+/**
+ * 独立页面（popup / options / grant）的样式入口。
+ *
+ * 面板（内容脚本）**不要**用这个文件，只 import 'tokens.css' + 'ui-kit.css'。
+ * 原因：@import 'tailwindcss' 会带上 preflight（* 和 html/body 的全局重置），
+ * 内容脚本挂在别人的页面上，只需要 :host { all: initial } 这一层隔离就够了，
+ * 不该往页面里塞一整套重置。
+ *
+ * 注意：这里只加载 Tailwind 的预置样式。要把 var(--ec-*) 桥接成工具类
+ * （bg-ec-bg 之类），需要在根 biome.json 打开 css.parser.tailwindDirectives
+ * 再加 @theme 块 —— 那是根配置，不在这里改。用 var(--ec-*) 效果完全一样。
+ */
+@import "tailwindcss";
+@import "./tokens.css";

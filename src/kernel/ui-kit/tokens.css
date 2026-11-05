@@ -1,0 +1,166 @@
+/**
+ * 全局视觉基准（方案 §10.6）。
+ *
+ * 三条约束决定了这个文件的写法：
+ * 1. 面板挂在 Shadow DOM 里（§10.10）。页面自身的字体、字号、颜色不会漏进来，
+ *    :host 先 all: initial 抹平继承，然后**重新声明** font-family / font-size /
+ *    line-height / color —— 不重新声明的话，面板里一个字都继承不到。
+ * 2. 尺寸全部用 px（§10.6 缩放一行）：移动版页面会改 html 的 font-size，
+ *    用 rem 面板尺寸会跟着页面失控。这里写 px，就不依赖 postcss 的 rem→px。
+ * 3. 主题跟随 prefers-color-scheme，设置里可以强制（§10.6 主题一行）。
+ *
+ * 本文件**只做令牌**，不含 Tailwind 的工具类与 preflight：
+ * 内容脚本的面板只用到下面这些 var(--ec-*) 和 ui-kit.css 里的组件类，
+ * 拉一整套 preflight 进每个商品页没有收益。
+ * 独立页面（popup / options / grant）需要工具类时 import 'ui-kit/tailwind.css'。
+ */
+
+:host {
+  all: initial;
+}
+
+:host,
+:root {
+  /* 浅色（§10.6 颜色（浅色）） */
+  --ec-bg: #ffffff;
+  --ec-bg-subtle: #f5f6f8;
+  --ec-line: #e5e7eb;
+  --ec-text: #1f2329;
+  --ec-text-2: #5c6370;
+  --ec-text-3: #8f959e;
+  --ec-accent: #f2561d;
+  --ec-accent-hover: #d94a15;
+  --ec-danger: #d93026;
+  --ec-on-accent: #ffffff;
+
+  /* 平台色点：只用在标题栏的色点上，不扩散到其他地方（§10.6 平台色点） */
+  --ec-platform-pdd: #e02e24;
+  --ec-platform-dy: #161823;
+  --ec-platform-dy-ring: #25f4ee;
+
+  /* 圆角（§10.6 圆角） */
+  --ec-radius-panel: 10px;
+  --ec-radius-control: 6px;
+  --ec-radius-thumb: 4px;
+
+  /* 阴影（§10.6 阴影）：一个面板只有一层 */
+  --ec-shadow-panel: 0 8px 24px rgba(15, 20, 30, 0.12), 0 0 0 1px rgba(15, 20, 30, 0.06);
+
+  /* 字体与字号（§10.6 字体/字号）：只用 400 和 600 两个字重 */
+  --ec-font:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --ec-fs-12: 12px;
+  --ec-fs-13: 13px;
+  --ec-fs-14: 14px;
+  --ec-fw-normal: 400;
+  --ec-fw-strong: 600;
+
+  /* 间距与关键尺寸（§10.3 面板布局） */
+  --ec-space: 4px;
+  --ec-pad: 16px;
+  --ec-titlebar-h: 40px;
+  --ec-product-h: 72px;
+  --ec-section-h: 28px;
+  --ec-row-h: 48px;
+  --ec-savebar-h: 32px;
+  --ec-primary-h: 36px;
+  --ec-panel-w: 360px;
+  --ec-panel-gap: 16px;
+  --ec-panel-max-h: calc(100vh - 96px);
+  --ec-handle-w: 32px;
+  --ec-handle-h: 88px;
+  --ec-thumb-sm: 32px;
+  --ec-thumb-grid: 72px;
+
+  /* 动效（§10.6 动效）：展开收起 160ms ease-out */
+  --ec-motion: 160ms ease-out;
+
+  color-scheme: light;
+}
+
+/* 深色（§10.6 颜色（深色））。强调色不变。 */
+@media (prefers-color-scheme: dark) {
+  :host,
+  :root {
+    --ec-bg: #1f2023;
+    --ec-bg-subtle: #27292d;
+    --ec-line: #35373c;
+    --ec-text: #e8eaed;
+    --ec-text-2: #a9aeb6;
+    --ec-text-3: #8f959e;
+    color-scheme: dark;
+  }
+}
+
+/* 设置里强制主题时，Shell 根元素带 data-ec-theme，子树继承（§10.6 主题） */
+[data-ec-theme="dark"] {
+  --ec-bg: #1f2023;
+  --ec-bg-subtle: #27292d;
+  --ec-line: #35373c;
+  --ec-text: #e8eaed;
+  --ec-text-2: #a9aeb6;
+  --ec-text-3: #8f959e;
+  color-scheme: dark;
+}
+
+[data-ec-theme="light"] {
+  --ec-bg: #ffffff;
+  --ec-bg-subtle: #f5f6f8;
+  --ec-line: #e5e7eb;
+  --ec-text: #1f2329;
+  --ec-text-2: #5c6370;
+  --ec-text-3: #8f959e;
+  color-scheme: light;
+}
+
+/* 面板基准：13px / 20px 行高 / 主文字色，数字等宽（§10.6 字体、字号） */
+.ec-root {
+  box-sizing: border-box;
+  font-family: var(--ec-font);
+  font-size: var(--ec-fs-13);
+  font-weight: var(--ec-fw-normal);
+  line-height: 20px;
+  color: var(--ec-text);
+  background: var(--ec-bg);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+.ec-root *,
+.ec-root *::before,
+.ec-root *::after {
+  box-sizing: border-box;
+}
+
+/* 给读屏器看的文本（LiveRegion） */
+.ec-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 遵循系统“减少动画”（§10.6 动效） */
+@media (prefers-reduced-motion: reduce) {
+  :host .ec-root *,
+  :host .ec-handle,
+  :host .ec-panel {
+    animation: none;
+    transition: none;
+  }
+}
+
+/*
+ * 关于 Tailwind 工具类：
+ * 面板（内容脚本）不用工具类，只认上面这套 var(--ec-*)。
+ * popup / options / grant 想用 bg-ec-bg 这类工具类时，需要先把这套令牌桥接成
+ * Tailwind 主题（\`@theme\` 块），而 Biome 2.6 默认不解析 Tailwind 指令，
+ * 加了 \`@theme\` 会让 \`biome check\` 报 parse 错误。
+ * 桥接属于构建配置的范畴（需要在根 biome.json 打开 css.parser.tailwindDirectives），
+ * 所以不放这里 —— 独立页面直接用 var(--ec-*)，效果完全一样。
+ */

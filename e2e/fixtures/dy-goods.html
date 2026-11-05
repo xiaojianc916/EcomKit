@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>抖音商城商品详情（E2E fixture）</title>
+    <!-- 结构等价样本，不含真实数据 -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // 抖音靠接口旁听，这里在页面里伪造一次命中抓取规则的请求
+      window.__e2eDetail = {
+        product: {
+          product_id: '3637489912345678901',
+          title: 'E2E 测试商品 抖音商城',
+          images: [
+            { url: 'https://p9.ecombdimg.com/e2e/main-01~tplv-obj:720:720.webp' },
+            { url: 'https://p9.ecombdimg.com/e2e/main-02~tplv-obj:720:720.webp' }
+          ],
+          detail_html: '<p><img src="https://p9.ecombdimg.com/e2e/detail-01~tplv-obj:720:720.webp"></p>'
+        }
+      };
+      const origFetch = window.fetch;
+      window.fetch = function (input, init) {
+        const url = typeof input === 'string' ? input : input?.url ?? '';
+        if (url.includes('/aweme/v2/shop/promotion/pack/h5/')) {
+          return Promise.resolve(
+            new Response(JSON.stringify(window.__e2eDetail), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        }
+        return origFetch.call(this, input, init);
+      };
+    </script>
+  </body>
+</html>

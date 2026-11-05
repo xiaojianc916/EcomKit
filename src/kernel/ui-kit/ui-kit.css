@@ -1,0 +1,362 @@
+/**
+ * ui-kit 组件样式。
+ *
+ * 全部用 CSS 类 + var(--ec-*)，不走 Tailwind 工具类：
+ * 面板在 Shadow DOM 里，工具类要靠构建期扫描 + @property 改写才生效（§10.10），
+ * 而这里的东西是产品的骨架，越少依赖构建魔改越稳。
+ *
+ * 尺寸一律 px（§10.6「尺寸全部用 px」）：页面改 html{font-size} 时面板不会跟着变形。
+ */
+
+/* ---------- Button（§10.6 圆角 6px、字号 13/14px） ---------- */
+.ec-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ec-line);
+  border-radius: var(--ec-radius-control);
+  background: var(--ec-bg);
+  color: var(--ec-text);
+  font-family: inherit;
+  font-size: var(--ec-fs-13);
+  font-weight: var(--ec-fw-normal);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.ec-btn:hover:not(:disabled) {
+  background: var(--ec-bg-subtle);
+}
+
+.ec-btn:focus-visible {
+  outline: 2px solid var(--ec-accent);
+  outline-offset: 1px;
+}
+
+.ec-btn:disabled {
+  cursor: default;
+  color: var(--ec-text-3);
+}
+
+/* 主按钮：36px 高、一行文字、强调色（§10.1「主按钮 36px 高，一行文字」） */
+.ec-btn--primary {
+  height: var(--ec-primary-h);
+  background: var(--ec-accent);
+  border-color: var(--ec-accent);
+  color: var(--ec-on-accent);
+  font-size: var(--ec-fs-14);
+  font-weight: var(--ec-fw-strong);
+}
+
+.ec-btn--primary:hover:not(:disabled) {
+  background: var(--ec-accent-hover);
+  border-color: var(--ec-accent-hover);
+  color: var(--ec-on-accent);
+}
+
+.ec-btn--primary:disabled {
+  background: var(--ec-bg-subtle);
+  border-color: var(--ec-line);
+  color: var(--ec-text-3);
+}
+
+.ec-btn--neutral {
+  background: var(--ec-bg-subtle);
+  color: var(--ec-text);
+}
+
+.ec-btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ec-text-2);
+}
+
+.ec-btn--ghost:hover:not(:disabled) {
+  background: var(--ec-bg-subtle);
+  color: var(--ec-text);
+}
+
+/* 行内文字按钮：「下载」「重试」（§10.3 素材行） */
+.ec-btn--link {
+  height: auto;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--ec-text-2);
+  font-size: var(--ec-fs-12);
+}
+
+.ec-btn--link:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ec-accent);
+}
+
+/* 图标按钮：⚙ ⟩ ⧉ 这类（§10.3 标题栏、商品信息） */
+.ec-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--ec-radius-control);
+  background: transparent;
+  color: var(--ec-text-2);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.ec-icon-btn:hover:not(:disabled) {
+  background: var(--ec-bg-subtle);
+  color: var(--ec-text);
+}
+
+.ec-icon-btn:focus-visible {
+  outline: 2px solid var(--ec-accent);
+  outline-offset: 1px;
+}
+
+.ec-icon-btn:disabled {
+  cursor: default;
+  color: var(--ec-text-3);
+}
+
+/* ---------- Checkbox（§10.3 素材行复选框，支持半选） ---------- */
+.ec-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--ec-text-3);
+  border-radius: 3px;
+  background: var(--ec-bg);
+  color: var(--ec-on-accent);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.ec-checkbox[data-state="checked"],
+.ec-checkbox[data-state="indeterminate"] {
+  background: var(--ec-accent);
+  border-color: var(--ec-accent);
+}
+
+.ec-checkbox:disabled {
+  border-color: var(--ec-line);
+  background: var(--ec-bg-subtle);
+  cursor: default;
+}
+
+.ec-checkbox:focus-visible {
+  outline: 2px solid var(--ec-accent);
+  outline-offset: 1px;
+}
+
+.ec-checkbox__mark {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+/* ---------- Progress（细进度条，§10.1「不用转圈的大动画」） ---------- */
+.ec-progress {
+  position: relative;
+  overflow: hidden;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ec-line);
+}
+
+.ec-progress__fill {
+  height: 100%;
+  background: var(--ec-accent);
+  transition: width 200ms linear;
+}
+
+/* ---------- Thumb（缩略图，§10.6 圆角 4px） ---------- */
+.ec-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex: none;
+  border-radius: var(--ec-radius-thumb);
+  background: var(--ec-bg-subtle);
+  color: var(--ec-text-3);
+  font-size: var(--ec-fs-12);
+  line-height: 1;
+}
+
+.ec-thumb__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* 加载失败时的灰色占位块，不影响下载（§10.3 缩略图网格） */
+.ec-thumb--failed {
+  background: var(--ec-line);
+}
+
+.ec-thumb__index {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  padding: 0 2px;
+  border-radius: 2px;
+  background: rgba(15, 20, 30, 0.55);
+  color: #ffffff;
+  font-size: 10px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ec-thumb__corner {
+  position: absolute;
+  top: 2px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: rgba(15, 20, 30, 0.55);
+  color: #ffffff;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.ec-thumb__corner--left {
+  left: 2px;
+}
+
+.ec-thumb__corner--right {
+  right: 2px;
+}
+
+/* ---------- Tooltip（Radix，挂在 PortalRoot 里） ---------- */
+.ec-tooltip {
+  z-index: 2147483647;
+  max-width: 240px;
+  padding: 4px 8px;
+  border-radius: var(--ec-radius-control);
+  background: var(--ec-text);
+  color: var(--ec-bg);
+  font-family: var(--ec-font);
+  font-size: var(--ec-fs-12);
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Toast（§10.5 不弹系统通知；toast 只在需要时给一句 + 一个动作） ---------- */
+.ec-toast-viewport {
+  position: fixed;
+  z-index: 2147483647;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 320px;
+}
+
+.ec-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--ec-line);
+  border-radius: var(--ec-radius-control);
+  background: var(--ec-bg);
+  box-shadow: var(--ec-shadow-panel);
+  color: var(--ec-text);
+  font-family: var(--ec-font);
+  font-size: var(--ec-fs-13);
+  line-height: 18px;
+}
+
+/* ---------- 分隔线与区块标题（§10.3 ③） ---------- */
+.ec-divider {
+  height: 1px;
+  background: var(--ec-line);
+}
+
+.ec-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--ec-section-h);
+  padding: 0 var(--ec-pad);
+  color: var(--ec-text-2);
+  font-size: var(--ec-fs-12);
+}
+
+/* 等宽数字（§10.6 字体） */
+.ec-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 小字标签：「页面解析」「H.265」（§10.4 素材行） */
+.ec-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--ec-line);
+  border-radius: 3px;
+  color: var(--ec-text-3);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+/* ---------- 动效（§10.6 动效：展开收起 160ms ease-out；网格高度变化 160ms） ---------- */
+.ec-panel {
+  animation: ec-panel-in var(--ec-motion);
+}
+
+.ec-handle {
+  transition: top var(--ec-motion);
+}
+
+@keyframes ec-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes ec-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 遵循 prefers-reduced-motion：关闭位移动画（§10.6 动效） */
+@media (prefers-reduced-motion: reduce) {
+  .ec-panel {
+    animation: none;
+  }
+
+  .ec-handle {
+    transition: none;
+  }
+}

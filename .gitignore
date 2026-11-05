@@ -1,0 +1,23 @@
+node_modules/
+.output/
+.wxt/
+stats.html
+*.log
+.DS_Store
+Thumbs.db
+
+# 固定扩展 ID 的密钥（§14）：私钥绝不入库，公钥要入库（它决定了恒定的扩展 ID）
+keys/private-key.pem
+keys/extension-id.txt
+
+# Phase 0 原始采样（含平台真实数据），只在本地保留
+.phase0-raw/
+fixtures-inbox/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+
+# 临时探针产物
+scripts/phase0/fsa-probe/
