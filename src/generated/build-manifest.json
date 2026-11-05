@@ -77,7 +77,7 @@
           "pageKinds": [
             "pdd.goods"
           ],
-          "urlPattern": "/proxy/api/.*(goods|detail|sku|mall).*"
+          "urlPattern": "/proxy/api/.*(goods|detail|sku|mall|render|integration).*"
         }
       ],
       "globals": [

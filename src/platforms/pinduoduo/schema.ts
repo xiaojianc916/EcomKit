@@ -31,6 +31,8 @@ export const PDD_ROOT_PATHS = [
 
 export const PDD_GOODS_PATHS = [
   'goods',
+  'goodsInfo',
+  'goods_info',
   'goodsDetail',
   'goods_detail',
   'detail',
@@ -39,7 +41,15 @@ export const PDD_GOODS_PATHS = [
 export const PDD_MALL_PATHS = ['mall', 'mallInfo', 'mall_info', 'shop', 'data.mall'] as const;
 
 /** 标题 */
-export const PDD_TITLE_PATHS = ['goodsName', 'goods_name', 'goods.name', 'name', 'title'] as const;
+export const PDD_TITLE_PATHS = [
+  'goodsName',
+  'goods_name',
+  'goodsTitle',
+  'goods_title',
+  'goods.name',
+  'name',
+  'title',
+] as const;
 
 /** 店铺名 */
 export const PDD_SHOP_PATHS = [
@@ -54,7 +64,9 @@ export const PDD_SHOP_PATHS = [
 export const PDD_GOODS_ID_PATHS = [
   'goodsId',
   'goods_id',
+  'goodsID',
   'goods.goodsId',
+  'goods.goodsID',
   'goods.goods_id',
   'id',
 ] as const;
@@ -63,11 +75,31 @@ export const PDD_GOODS_ID_PATHS = [
 export const PDD_MAIN_IMAGE_PATHS = [
   'topGallery',
   'top_gallery',
-  'detailGallery',
+  // 第三方实测（ucmao/media-parser）：登录态 rawData.store.initDataObj.goods.banner / gallery
+  'banner',
+  'bannerList',
+  'banner_list',
   'gallery',
+  'galleryList',
+  'gallery_list',
   'images',
+  'imageList',
+  'image_list',
   'goods.topGallery',
   'goods.top_gallery',
+  'goods.banner',
+  'goods.gallery',
+  'detailGallery',
+] as const;
+
+/** 主图数组都拿不到时的最后兜底：单张大图（hd_thumb_url / thumb_url） */
+export const PDD_SINGLE_MAIN_PATHS = [
+  'hdThumbUrl',
+  'hd_thumb_url',
+  'thumbUrl',
+  'thumb_url',
+  'imageUrl',
+  'image_url',
 ] as const;
 
 /** 详情图（带 width / height） */
@@ -75,22 +107,36 @@ export const PDD_DETAIL_IMAGE_PATHS = [
   'detailGallery',
   'detail_gallery',
   'detailImages',
+  'detail_images',
   'descImages',
+  'desc_images',
+  'goodsDesc.images',
   'goods.detailGallery',
   'goods.detail_gallery',
 ] as const;
 
 /** SKU 列表 */
-export const PDD_SKU_PATHS = ['skus', 'skuList', 'sku_list', 'specs', 'goods.skus'] as const;
+export const PDD_SKU_PATHS = [
+  'skus',
+  'sku',
+  'skuList',
+  'sku_list',
+  'specs',
+  'goods.skus',
+] as const;
 
 /** 视频 */
 export const PDD_VIDEO_PATHS = [
   'videoGallery',
   'video_gallery',
   'videos',
+  'videoList',
+  'video_list',
+  // 第三方实测：goods.video 是单个对象 { url }，读取时会包成数组
   'video',
   'goods.videoGallery',
   'goods.video_gallery',
+  'goods.video',
 ] as const;
 
 /** 价格（分） */
@@ -150,7 +196,21 @@ export function normalizeImageLike(value: unknown): PddRawImage | null {
   const rec = value as Record<string, unknown>;
 
   // 多候选：不同接口分别用 url / thumbUrl / imgUrl / imageUrl
-  const url = firstNonEmpty(rec, ['url', 'thumbUrl', 'thumb_url', 'imgUrl', 'img_url', 'imageUrl']);
+  const url = firstNonEmpty(rec, [
+    'url',
+    'hdUrl',
+    'hd_url',
+    'imgUrl',
+    'img_url',
+    'imageUrl',
+    'image_url',
+    'picUrl',
+    'pic_url',
+    'src',
+    'img',
+    'thumbUrl',
+    'thumb_url',
+  ]);
   if (typeof url !== 'string' || url.trim() === '') return null;
 
   const out: PddRawImage = { url: url.trim() };
@@ -213,6 +273,8 @@ export function normalizeVideoLike(value: unknown): PddRawVideo | null {
     'main_url',
     'playUrl',
     'play_url',
+    'h5_auto_play_url',
+    'src',
   ]);
   if (typeof url !== 'string' || url.trim() === '') return null;
 

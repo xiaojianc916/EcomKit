@@ -29,7 +29,8 @@ const manifest: PlatformManifest = {
       // 待验证：登录态下商品详情接口的确切路径，先覆盖 /proxy/api/ 下所有 goods 相关接口。
       id: 'pdd.goods-detail',
       pageKinds: ['pdd.goods'],
-      urlPattern: '/proxy/api/.*(goods|detail|sku|mall).*',
+      // 商品页前端渲染时数据来自 /proxy/api/api/oak/integration/render（第三方实测），一并覆盖
+      urlPattern: '/proxy/api/.*(goods|detail|sku|mall|render|integration).*',
     },
   ],
   // 允许 bridge 读取的全局变量白名单（§7.4）

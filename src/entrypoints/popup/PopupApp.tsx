@@ -1,3 +1,4 @@
+import { errorMessage } from '../../kernel/errors/messages';
 import { useEffect, useState } from 'react';
 import { sendMessage } from '../../kernel/messaging/runtime';
 import type { TabState } from '../../kernel/messaging/protocol';
@@ -108,8 +109,16 @@ export function PopupApp() {
       <div className="pp__body">
         <p className="pp__title" title={state.snapshot?.title ?? ''}>
           {state.snapshot?.title ??
-            (state.status === 'blocked' ? '没有识别到商品数据' : '正在识别…')}
+            (state.status === 'blocked'
+              ? errorMessage(state.blocker ?? 'PARSE_EMPTY').title
+              : '正在识别…')}
         </p>
+        {!state.snapshot && state.status === 'blocked' ? (
+          <p className="pp__meta">
+            {errorMessage(state.blocker ?? 'PARSE_EMPTY').hint ?? ''}
+            {state.blocker ? `（${state.blocker}）` : ''}
+          </p>
+        ) : null}
         <p className="pp__meta">ID {state.snapshot?.productId ?? state.productId ?? '—'}</p>
         {KIND_ORDER.map((kind) => (
           <label key={kind} className="pp__row">

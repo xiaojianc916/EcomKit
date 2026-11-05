@@ -2,13 +2,15 @@ import type { ErrorCode } from '../../kernel/errors/codes';
 import type { Asset } from '../../kernel/model/asset';
 import type { ProductDraft, Sku } from '../../kernel/model/product';
 import { parseExpiry } from '../../kernel/net/expiry';
-import { allowedUrls } from '../shared/cdn';
+import { allowedUrls, isAllowedCdnUrl } from '../shared/cdn';
 import { collectDomImages, type DomImageRules } from '../shared/dom-heuristics';
 import { assetKeyFromUrl } from '../shared/html-images';
 import { readInlineGlobal } from '../shared/inline-ssr';
 import { firstNonEmpty, readArray, readNumber, readString } from '../shared/read-path';
+import { normalizeUrl } from '../shared/url';
 import { selectVideo, toVideoMeta } from '../shared/video';
 import type { DataSource, PlatformResolver, ResolveContext } from '../types';
+import { deepScanPdd } from './deep-scan';
 import pddManifest from './manifest';
 import {
   originalImageCandidates,
@@ -19,6 +21,7 @@ import {
 import {
   findPddRoots,
   isNeedLogin,
+  normalizeImageLike,
   normalizeImageList,
   normalizeSkuLike,
   normalizeVideoList,
@@ -26,9 +29,12 @@ import {
   PDD_MAIN_IMAGE_PATHS,
   PDD_PRICE_PATHS,
   PDD_SHOP_PATHS,
+  PDD_SINGLE_MAIN_PATHS,
   PDD_SKU_PATHS,
   PDD_TITLE_PATHS,
   PDD_VIDEO_PATHS,
+  type PddRawImage,
+  type PddRawVideo,
   pickGoodsId,
 } from './schema';
 
@@ -95,9 +101,19 @@ function safeBodyText(doc: Document): string {
   }
 }
 
+/**
+ * 下架页很短，只有一行提示；正常商品页的推荐区、评价区也可能出现「已下架」字样，
+ * 所以正文太长时不按文案判定，交给数据源（没有数据会落到 PARSE_EMPTY）。
+ */
 function isGonePage(doc: Document): boolean {
+  let full = '';
+  try {
+    full = doc.body?.textContent ?? '';
+  } catch {
+    return false;
+  }
+  if (full === '' || full.length > 3000) return false;
   const text = safeBodyText(doc);
-  if (text === '') return false;
   return GONE_TEXTS.some((t) => text.includes(t));
 }
 
@@ -113,19 +129,44 @@ function hasLoginForm(doc: Document): boolean {
   }
 }
 
-/** 页面上是否已经有商品图（排除二维码、图标这类小图） */
+/**
+ * 页面上是否已经有商品图（排除二维码、图标这类小图）。
+ * 真实页面的 <img> 基本不写 width 属性，所以同时看 naturalWidth / 渲染宽度，
+ * 并且只认 CDN 白名单里的图（二维码、登录插画不在 pddpic 上）。
+ */
 function hasProductImages(doc: Document): boolean {
   try {
     for (const img of doc.querySelectorAll('img')) {
-      const src = img.getAttribute('src') ?? img.getAttribute('data-src') ?? '';
-      if (!/^https?:\/\//.test(src)) continue;
-      const w = Number(img.getAttribute('width') ?? 0);
-      if (w >= 100) return true;
+      const src = pickImgSrc(img);
+      if (src === undefined) continue;
+      const url = normalizeUrl(src, { base: doc.location?.href ?? 'https://mobile.yangkeduo.com/' });
+      if (url === undefined || !isAllowedCdnUrl(url, CDN_HOSTS)) continue;
+      if (imageWidth(img) >= 100) return true;
     }
     return false;
   } catch {
     return false;
   }
+}
+
+function imageWidth(img: Element): number {
+  const attr = Number(img.getAttribute('width') ?? 0);
+  const natural = (img as HTMLImageElement).naturalWidth ?? 0;
+  let rendered = 0;
+  try {
+    rendered = img.getBoundingClientRect().width;
+  } catch {
+    rendered = 0;
+  }
+  return Math.max(Number.isFinite(attr) ? attr : 0, natural, rendered);
+}
+
+function pickImgSrc(img: Element): string | undefined {
+  for (const attr of ['data-src', 'data-original', 'data-lazy-src', 'src']) {
+    const v = img.getAttribute(attr);
+    if (typeof v === 'string' && v.trim() !== '' && !v.startsWith('data:')) return v.trim();
+  }
+  return undefined;
 }
 
 /** SSR 里是否已经有商品数据（有标题就认为拿到了） */
@@ -151,13 +192,13 @@ export function pddHasGoodsData(rawData: unknown): boolean {
  */
 export function detectPddBlocker(doc: Document, url: URL): ErrorCode | null {
   if (isLoginLocation(url)) return 'LOGIN_REQUIRED';
-  if (isGonePage(doc)) return 'PRODUCT_GONE';
 
   const inline = readInlineGlobal(doc, 'rawData');
-  if (inline !== undefined && isNeedLogin(inline) && !pddHasGoodsData(inline)) {
-    return 'LOGIN_REQUIRED';
-  }
+  // SSR 里已经有商品数据：页面上其他元素（PC 侧栏的扫码登录、推荐区文案）都不算阻断
+  if (inline !== undefined && pddHasGoodsData(inline)) return null;
+  if (inline !== undefined && isNeedLogin(inline)) return 'LOGIN_REQUIRED';
 
+  if (isGonePage(doc)) return 'PRODUCT_GONE';
   if (hasLoginForm(doc) && !hasProductImages(doc)) return 'LOGIN_REQUIRED';
   return null;
 }
@@ -203,11 +244,36 @@ export const ssrSource: DataSource = {
     } catch {
       return;
     }
-    if (rawData === undefined) return;
+    if (rawData === undefined) {
+      ctx.log.info('SSR：页面上没有 window.rawData');
+      return;
+    }
     const draft = draftFromPayload(rawData, ctx, 'ssr');
+    ctx.log.info('SSR：rawData 解析结果', describeDraft(rawData, draft));
     if (draft) yield draft;
   },
 };
+
+/** 诊断摘要：只输出结构和数量，不输出任何字段值（避免把个人信息写进日志） */
+function describeDraft(payload: unknown, draft: ProductDraft | null): Record<string, unknown> {
+  const roots = findPddRoots(payload);
+  const counts: Record<string, number> = {};
+  for (const a of draft?.assets ?? []) counts[a.kind] = (counts[a.kind] ?? 0) + 1;
+  return {
+    topKeys: topKeys(payload),
+    initDataKeys: topKeys(firstNonEmpty(payload, ['store.initDataObj', 'initDataObj'])),
+    goodsKeys: topKeys(roots?.goods),
+    hasTitle: draft?.title !== undefined,
+    counts,
+    // 深度扫描命中的路径（只有路径名，没有值），用来把真实字段补进 schema 候选表
+    deepScan: deepScanPdd(roots?.goods ?? payload, { cdnHosts: CDN_HOSTS }).paths,
+  };
+}
+
+function topKeys(v: unknown): string[] | null {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return null;
+  return Object.keys(v as Record<string, unknown>).slice(0, 60);
+}
 
 /**
  * 抓包数据源：每命中一条带商品数据的响应就产出一份 draft。
@@ -219,11 +285,15 @@ export const captureSource: DataSource = {
     for await (const payload of ctx.captures(CAPTURE_RULE_ID)) {
       if (ctx.signal.aborted) return;
       if (payload.json === null || typeof payload.json !== 'object') continue;
+      ctx.log.debug('抓包命中', { url: safePath(payload.url) });
       if (!matchesProductId(payload.json, ctx.productId)) {
         ctx.log.debug('抓包数据不是当前商品，丢弃', { productId: ctx.productId });
         continue;
       }
       const draft = draftFromPayload(payload.json, ctx, 'capture');
+      if (draft?.assets?.length) {
+        ctx.log.info('抓包：商品数据', { url: safePath(payload.url), assets: draft.assets.length });
+      }
       if (draft) yield draft;
     }
   },
@@ -239,8 +309,16 @@ export const domSource: DataSource = {
     }
     if (ctx.signal.aborted) return;
 
-    const picked = collectDomImages(doc, PDD_DOM_RULES);
-    const assets: Asset[] = [...picked.main, ...picked.detail, ...picked.sku];
+    // 页面是前端渲染时，DOMContentLoaded 那一刻图片可能还没出来：没找到就隔一会儿再找
+    const deadline = Date.now() + DOM_POLL_MS;
+    let assets: Asset[] = [];
+    while (!ctx.signal.aborted) {
+      assets = collectPddDomAssets(doc, ctx.productId);
+      if (assets.length > 0 || Date.now() >= deadline) break;
+      await sleep(DOM_POLL_INTERVAL_MS, ctx.signal);
+    }
+    if (ctx.signal.aborted) return;
+    ctx.log.info('DOM：页面图片', { assets: assets.length });
     if (assets.length === 0) return;
 
     const draft: ProductDraft = { source: 'dom', assets };
@@ -249,6 +327,134 @@ export const domSource: DataSource = {
     yield draft;
   },
 };
+
+const DOM_POLL_MS = 6000;
+const DOM_POLL_INTERVAL_MS = 600;
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    }
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** 先按类名规则找；拼多多 H5 的类名是编译后的短哈希，规则落空时用「CDN 大图」启发式 */
+export function collectPddDomAssets(doc: Document, productId: string): Asset[] {
+  const picked = collectDomImages(doc, PDD_DOM_RULES);
+  const byRules = [...picked.main, ...picked.detail, ...picked.sku].filter((a) =>
+    a.candidates.some((u) => isAllowedCdnUrl(u, CDN_HOSTS)),
+  );
+  if (byRules.length > 0) return byRules;
+  return collectLargeCdnImages(doc, productId);
+}
+
+/** 推荐区的标题文案：这些文字之后的图片都不是本商品的 */
+const RECOMMEND_HEADINGS = /为你推荐|猜你喜欢|相似商品|看了又看|店铺推荐|更多好货|大家都在买|同类好物/;
+
+function findRecommendCutoff(doc: Document): Element | null {
+  try {
+    const walker = doc.createTreeWalker(doc.body ?? doc.documentElement, NodeFilter.SHOW_TEXT);
+    let steps = 0;
+    for (let node = walker.nextNode(); node !== null && steps < 20_000; node = walker.nextNode()) {
+      steps += 1;
+      const text = node.textContent ?? '';
+      if (text.length <= 12 && RECOMMEND_HEADINGS.test(text)) return node.parentElement;
+    }
+  } catch {
+    // 遍历失败就不截断
+  }
+  return null;
+}
+
+/**
+ * 通用 DOM 兜底：页面上来自 pddpic / yangkeduo 的大图。
+ * - 推荐区标题之后的图片全部丢弃；链接到别的 goods_id 的图片（推荐卡片）丢弃；
+ * - 位于页面顶部（首屏轮播区）的归为主图，其余渲染宽度 ≥ 300 的归为详情图；
+ * - 评价晒图、图标、头像渲染尺寸都小，被宽度阈值挡掉。
+ */
+function collectLargeCdnImages(doc: Document, productId: string): Asset[] {
+  const base = doc.location?.href ?? undefined;
+  const cutoff = findRecommendCutoff(doc);
+  const view = doc.defaultView;
+  const scrollY = view?.scrollY ?? 0;
+  const viewportH = view?.innerHeight ?? 800;
+  const main: string[] = [];
+  const detail: string[] = [];
+  const seen = new Set<string>();
+
+  let imgs: Element[] = [];
+  try {
+    imgs = Array.from(doc.querySelectorAll('img'));
+  } catch {
+    return [];
+  }
+  for (const img of imgs) {
+    if (cutoff && cutoff.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING) continue;
+    const link = img.closest('a[href*="goods_id="]');
+    if (link) {
+      const href = link.getAttribute('href') ?? '';
+      if (!href.includes(`goods_id=${productId}`)) continue;
+    }
+    const raw = pickImgSrc(img);
+    if (raw === undefined) continue;
+    const norm = normalizeUrl(raw, base === undefined ? {} : { base });
+    if (norm === undefined || !isAllowedCdnUrl(norm, CDN_HOSTS)) continue;
+    const original = originalImageCandidates(norm, base)[0] ?? norm;
+    const key = assetKeyFromUrl(original);
+    if (seen.has(key)) continue;
+
+    let rect: DOMRect | undefined;
+    try {
+      rect = img.getBoundingClientRect();
+    } catch {
+      rect = undefined;
+    }
+    const width = Math.max(rect?.width ?? 0, Number(img.getAttribute('width') ?? 0) || 0);
+    const top = (rect?.top ?? 0) + scrollY;
+    if (width >= 250 && top < viewportH) {
+      seen.add(key);
+      if (main.length < 15) main.push(norm);
+    } else if (width >= 300) {
+      seen.add(key);
+      if (detail.length < 80) detail.push(norm);
+    }
+  }
+
+  const toAsset = (url: string, kind: 'main' | 'detail', index: number): Asset => {
+    const candidates = allowedUrls(originalImageCandidates(url, base), CDN_HOSTS, base);
+    const preview = thumbnailUrl(url, 200, base);
+    return {
+      key: assetKeyFromUrl(candidates[0] ?? url),
+      kind,
+      index,
+      candidates: candidates.length > 0 ? candidates : [url],
+      ...(preview !== undefined ? { preview } : {}),
+      fromDom: true,
+    };
+  };
+  return [
+    ...main.map((u, i) => toAsset(u, 'main', i)),
+    ...detail.map((u, i) => toAsset(u, 'detail', i)),
+  ];
+}
+
+function safePath(raw: string | undefined): string {
+  if (raw === undefined) return '';
+  try {
+    return new URL(raw, 'https://mobile.yangkeduo.com/').pathname;
+  } catch {
+    return '';
+  }
+}
 
 function waitForDomReady(doc: Document, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -294,14 +500,24 @@ export function draftFromPayload(
 ): ProductDraft | null {
   if (payload === null || payload === undefined) return null;
   const roots = findPddRoots(payload);
-  if (!roots) return null;
+  // SSR 的 rawData 就是本商品页的数据：找不到 goods 容器时整体做深度扫描；
+  // 抓包可能是推荐接口，没有 goods 容器就不扫，免得混入别的商品
+  if (!roots && source !== 'ssr') return null;
 
-  const goods = roots.goods;
-  const mall = roots.mall;
+  const goods = roots?.goods ?? null;
+  const mall = roots?.mall ?? null;
+  const scanRoot: unknown =
+    goods ?? (source === 'ssr' ? (firstNonEmpty(payload, ['store.initDataObj']) ?? payload) : null);
   const base = ctx.url.href;
   const draft: ProductDraft = { source };
 
-  const title = readString(goods, PDD_TITLE_PATHS);
+  let scanned: ReturnType<typeof deepScanPdd> | undefined;
+  const deep = (): ReturnType<typeof deepScanPdd> => {
+    scanned ??= deepScanPdd(scanRoot, { cdnHosts: CDN_HOSTS, base });
+    return scanned;
+  };
+
+  const title = readString(goods, PDD_TITLE_PATHS) ?? (scanRoot ? deep().title : undefined);
   if (title !== undefined) draft.title = title;
 
   const shopName = readString(mall, PDD_SHOP_PATHS) ?? readString(goods, PDD_SHOP_PATHS);
@@ -313,14 +529,20 @@ export function draftFromPayload(
   }
 
   const assets: Asset[] = [];
-  const mainImages = normalizeImageList(readArray(goods, PDD_MAIN_IMAGE_PATHS));
+  let mainImages: PddRawImage[] = normalizeImageList(readArray(goods, PDD_MAIN_IMAGE_PATHS));
+  if (mainImages.length === 0 && scanRoot) mainImages = deep().main;
+  if (mainImages.length === 0) {
+    const single = normalizeImageLike(firstNonEmpty(goods, PDD_SINGLE_MAIN_PATHS));
+    if (single) mainImages = [single];
+  }
   mainImages.forEach((img, i) => {
     const asset = toPddImageAsset(img, { kind: 'main', index: i, base });
     if (asset) assets.push(asset);
   });
 
   const mainKeys = new Set(assets.map((a) => a.key));
-  const detailImages = normalizeImageList(readArray(goods, PDD_DETAIL_IMAGE_PATHS));
+  let detailImages: PddRawImage[] = normalizeImageList(readArray(goods, PDD_DETAIL_IMAGE_PATHS));
+  if (detailImages.length === 0 && scanRoot) detailImages = deep().detail;
   detailImages.forEach((img, i) => {
     const asset = toPddImageAsset(img, { kind: 'detail', index: i, base });
     // 主图数组和详情图数组偶尔指向同一批图，按 key 去重
@@ -329,7 +551,9 @@ export function draftFromPayload(
 
   const skuPart = buildSkus(goods, base);
   assets.push(...skuPart.assets);
-  assets.push(...buildVideos(goods, base));
+  let videos = buildVideos(readVideoList(goods), base);
+  if (videos.length === 0 && scanRoot) videos = buildVideos(deep().videos, base);
+  assets.push(...videos);
 
   const safeAssets = assets
     .map((asset) => withAllowedCandidates(asset, base))
@@ -337,6 +561,7 @@ export function draftFromPayload(
 
   if (safeAssets.length > 0) draft.assets = safeAssets;
   if (skuPart.skus.length > 0) draft.skus = skuPart.skus;
+  if (!draft.title && !draft.assets?.length && !draft.skus?.length) return null;
   return draft;
 }
 
@@ -410,8 +635,15 @@ function buildSkus(goods: unknown, base: string): { assets: Asset[]; skus: Sku[]
  * 视频：拼多多给的是 mp4 直链，选择规则见 shared/video.ts
  * （优先 H.264、同编码选分辨率最高、再选码率最高）。
  */
-function buildVideos(goods: unknown, base: string): Asset[] {
-  const raws = normalizeVideoList(readArray(goods, PDD_VIDEO_PATHS));
+/** 视频字段既可能是数组，也可能是单个对象（goods.video = { url }） */
+function readVideoList(goods: unknown): PddRawVideo[] {
+  const v = firstNonEmpty(goods, PDD_VIDEO_PATHS);
+  if (Array.isArray(v)) return normalizeVideoList(v);
+  if (v !== undefined) return normalizeVideoList([v]);
+  return [];
+}
+
+function buildVideos(raws: readonly PddRawVideo[], base: string): Asset[] {
   if (raws.length === 0) return [];
 
   const out: Asset[] = [];

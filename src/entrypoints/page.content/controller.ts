@@ -278,11 +278,14 @@ export function createPageController(ctx: ContentScriptContext): PageController 
       }
       decideForm();
       notify();
-      log.info('resolve done', {
+      const summary = {
         productId: hit.productId,
         assets: result.snapshot?.assets.length ?? 0,
         completeness,
-      });
+        sources: result.sources,
+      };
+      if (result.snapshot) log.info('resolve done', summary);
+      else log.warn('resolve done：没有拿到任何素材（PARSE_EMPTY），上面的 SSR / DOM 日志是各数据源的结果', summary);
     } catch (e) {
       if (localAbort.signal.aborted) return;
       const code = EcError.from(e).code;

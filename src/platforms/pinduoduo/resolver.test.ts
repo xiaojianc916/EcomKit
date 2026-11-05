@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ProductDraft } from '../../kernel/model/product';
 import type { CapturedPayload, ResolveContext } from '../types';
 import pddManifest from './manifest';
@@ -235,7 +235,14 @@ describe('domSource：DOMContentLoaded 后产出一份', () => {
     );
     Object.defineProperty(doc, 'readyState', { value: 'complete', configurable: true });
     const { ctx } = makeCtx({ document: doc });
-    expect(await collect(domSource, ctx)).toHaveLength(0);
+    vi.useFakeTimers();
+    try {
+      const result = collect(domSource, ctx);
+      await vi.advanceTimersByTimeAsync(6600);
+      expect(await result).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('signal 已经 abort 时立即返回', async () => {
@@ -284,5 +291,36 @@ describe('draftFromPayload：视频与价格', () => {
     const videos = (draft?.assets ?? []).filter((a) => a.kind === 'video');
     expect(videos).toHaveLength(1);
     expect(videos[0]?.video?.codec).toBeDefined();
+  });
+});
+
+
+describe('真实字段兼容与兜底（模拟数据）', () => {
+  const ctx = { url: PAGE_URL, document: emptyDoc() };
+  it('解析 banner 和单个 video 对象', () => {
+    const payload = { store: { initDataObj: { goods: {
+      goods_name: '样例商品', banner: [{ url: 'https://img.pddpic.com/a.jpg' }],
+      video: { url: 'https://img.pddpic.com/v.mp4' },
+    } } } };
+    const d = draftFromPayload(payload, ctx, 'ssr');
+    expect(d?.title).toBe('样例商品');
+    expect(d?.assets?.map(a => a.kind)).toEqual(['main', 'video']);
+  });
+  it('未知嵌套路径中扫描主图和详情图，排除推荐', () => {
+    const payload = { goods: { goods_name: '样例', nested: {
+      banner_pictures: ['https://img.pddpic.com/a.jpg'],
+      description_pictures: ['https://img.pddpic.com/b.jpg'],
+      recommend: { gallery: ['https://img.pddpic.com/wrong.jpg'] },
+    } } };
+    const d = draftFromPayload(payload, ctx, 'ssr');
+    expect(d?.assets?.map(a => a.kind)).toEqual(['main', 'detail']);
+    expect(d?.assets?.every(a => !a.candidates.some(u => u.includes('wrong')))).toBe(true);
+  });
+  it('商品数据存在时不被扫码栏的登录表单误判', () => {
+    const html = '<html><head><script>window.rawData={"store":{"initDataObj":{"goods":{"goods_name":"测试"}}}};</script></head><body><form class="login-ui-form"></form></body></html>';
+    expect(detectPddBlocker(emptyDoc(html), PAGE_URL)).toBeNull();
+  });
+  it('无商品字段也无素材不生成空 draft', () => {
+    expect(draftFromPayload({}, ctx, 'ssr')).toBeNull();
   });
 });
