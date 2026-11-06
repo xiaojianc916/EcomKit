@@ -11,6 +11,7 @@ export {
   type ButtonVariant,
   IconButton,
   type IconButtonProps,
+  INLINE_ICON_SIZE,
 } from './Button';
 export { Checkbox, type CheckboxProps } from './Checkbox';
 export {

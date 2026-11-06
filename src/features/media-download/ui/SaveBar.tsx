@@ -1,7 +1,7 @@
 import { Copy } from 'lucide-react';
 import { useState } from 'react';
 import type { DirState } from '../../../kernel/messaging/protocol';
-import { IconButton, Tooltip } from '../../../kernel/ui-kit';
+import { IconButton, INLINE_ICON_SIZE, Tooltip } from '../../../kernel/ui-kit';
 
 /**
  * ⑤ 保存位置（§10.3，高 32px）。
@@ -80,13 +80,13 @@ export function SaveBar({ dir, relativePath, rootPath, onOpenGrant, onCopy }: Sa
             </span>
           </Tooltip>
           <Tooltip content={copied ? '已复制' : '复制路径'}>
-            <IconButton label="复制保存路径" onClick={copy}>
+            <IconButton label="复制保存路径" className="ec-icon-btn--inline" onClick={copy}>
               {copied ? (
                 <span style={{ fontSize: 12 }} aria-hidden="true">
                   ✓
                 </span>
               ) : (
-                <Copy size={16} strokeWidth={1.75} aria-hidden="true" />
+                <Copy size={INLINE_ICON_SIZE} strokeWidth={1.75} aria-hidden="true" />
               )}
             </IconButton>
           </Tooltip>

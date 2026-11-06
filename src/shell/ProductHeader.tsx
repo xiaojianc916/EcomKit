@@ -1,7 +1,7 @@
 import { Copy } from 'lucide-react';
 import { useState } from 'react';
 import type { ProductSnapshot } from '../kernel/model/product';
-import { IconButton, Thumb, Tooltip } from '../kernel/ui-kit';
+import { IconButton, INLINE_ICON_SIZE, Thumb, Tooltip } from '../kernel/ui-kit';
 
 /**
  * ② 商品信息区（§10.3，高 72px）。
@@ -63,18 +63,18 @@ export function ProductHeader({ snapshot, onCopy }: ProductHeaderProps) {
             {snapshot.title}
           </div>
         </Tooltip>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
           <span style={{ fontSize: 12, color: 'var(--ec-text-2)' }} className="ec-num">
             ID {snapshot.productId}
           </span>
           <Tooltip content={copied ? '已复制' : '复制商品 ID'}>
-            <IconButton label="复制商品 ID" onClick={copyId}>
+            <IconButton label="复制商品 ID" className="ec-icon-btn--inline" onClick={copyId}>
               {copied ? (
                 <span style={{ fontSize: 12 }} aria-hidden="true">
                   ✓
                 </span>
               ) : (
-                <Copy size={16} strokeWidth={1.75} aria-hidden="true" />
+                <Copy size={INLINE_ICON_SIZE} strokeWidth={1.75} aria-hidden="true" />
               )}
             </IconButton>
           </Tooltip>

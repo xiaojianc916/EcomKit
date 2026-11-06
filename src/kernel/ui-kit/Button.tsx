@@ -42,6 +42,14 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   );
 });
 
+/**
+ * 紧挨 12px 正文小字的复制图标尺寸（商品 ID、保存路径）。
+ *
+ * 不用标题栏那个 16px：这两个按钮挨着的是正文小字，图标和字一样大才读得成
+ * 「这句话的一部分」；16px 图标压在 12px 文字旁边会明显盖过文字。
+ */
+export const INLINE_ICON_SIZE = 12;
+
 export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** 图标按钮必须有可读的名字（读屏器和 tooltip 共用） */
   label: string;
