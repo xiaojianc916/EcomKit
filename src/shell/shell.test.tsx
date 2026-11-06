@@ -152,7 +152,13 @@ describe('Panel（§10.3 布局）', () => {
     );
   }
 
-  it('标题栏有平台名、设置和收起按钮，不写产品名（§10.3 ①）', () => {
+  it('标题栏左上角是平台图标（有图标时不再画色点 + 名称）', () => {
+    const { container } = renderPanel({ platformId: 'pinduoduo' });
+    expect(container.querySelector('[data-ecbox-logo="pinduoduo"]')).not.toBeNull();
+    expect(screen.queryByText('拼多多')).toBeNull();
+  });
+
+  it('没有平台图标时退回「色点 + 平台名 + 设置 + 收起」，不写产品名（§10.3 ①）', () => {
     renderPanel();
     expect(screen.getByText('拼多多')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument();

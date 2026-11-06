@@ -622,6 +622,8 @@ export function createPageController(ctx: ContentScriptContext): PageController 
       return {
         store: ensureStore(),
         platformName: m?.displayName ?? '',
+        // 标题栏左上角的图标用平台 id 选（没有图标时 Panel 自己退回色点 + 名称）
+        ...(platformId === '' ? {} : { platformId }),
         ...(m?.brandColor ? { platformColor: m.brandColor } : {}),
         ...(m?.brandRing ? { platformRing: m.brandRing } : {}),
         supportsMobileMode: m?.supportsMobileMode ?? false,

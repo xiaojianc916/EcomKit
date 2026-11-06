@@ -125,7 +125,6 @@ function SaveSection({
 }) {
   return (
     <>
-      <p className="ec-field__hint">素材会按「商品 / 类别」归档到你选择的文件夹。</p>
       <div className="ec-field">
         <span className="ec-field__label">保存方式</span>
         <select
@@ -199,7 +198,6 @@ function NamingSection() {
 
   return (
     <>
-      <p className="ec-field__hint">商品文件夹名由模板生成，模板里必须包含 {'{id}'}。</p>
       <div className="ec-field">
         <span className="ec-field__label">商品文件夹模板</span>
         <input className="ec-input" value={template} onChange={(e) => onChange(e.target.value)} />
@@ -274,7 +272,6 @@ function MediaSection() {
 
   return (
     <>
-      <p className="ec-field__hint">这些设置针对「素材下载」功能，改动立即生效。</p>
       {Section === null ? (
         <p className="ec-field__hint">正在读取素材设置…</p>
       ) : (
@@ -296,7 +293,6 @@ function ShellSection({
 }) {
   return (
     <>
-      <p className="ec-field__hint">控制进入商品页时的行为。</p>
       <div className="ec-field">
         <span className="ec-field__label">进入商品页时</span>
         <select
@@ -345,7 +341,6 @@ function AdvancedSection({
 }) {
   return (
     <>
-      <p className="ec-field__hint">一般不需要改。</p>
       <div className="ec-field">
         <span className="ec-field__label">并发数</span>
         <input
@@ -402,7 +397,6 @@ export async function exportDiagnosticsFile(): Promise<void> {
 function AboutSection() {
   return (
     <>
-      <p className="ec-field__hint">电商素材工具箱，内部使用。</p>
       <div className="ec-field">
         <span className="ec-field__label">版本</span>
         <span className="ec-field__value">{chrome.runtime.getManifest().version}</span>

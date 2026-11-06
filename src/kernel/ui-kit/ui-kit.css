@@ -324,6 +324,41 @@
   font-size: var(--ec-fs-12);
 }
 
+/* ---------- 分组标签（设置视图的导航：悬停/选中是胶囊底色，没有下划线） ---------- */
+.ec-tab {
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--ec-radius-control);
+  background: transparent;
+  color: var(--ec-text-2);
+  font-family: var(--ec-font);
+  font-size: var(--ec-fs-12);
+  font-weight: var(--ec-fw-normal);
+  line-height: 26px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.ec-tab:hover {
+  background: var(--ec-bg-subtle);
+  color: var(--ec-text);
+}
+
+.ec-tab[aria-selected="true"] {
+  background: var(--ec-bg-subtle);
+  color: var(--ec-text);
+  font-weight: var(--ec-fw-strong);
+}
+
+.ec-tab:focus-visible {
+  outline: 2px solid var(--ec-accent);
+  outline-offset: 1px;
+}
+
 /* ---------- 表单控件（设置视图；和 options 页同款外观，但只用 --ec-* 令牌） ---------- */
 .ec-field {
   display: flex;

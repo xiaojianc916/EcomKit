@@ -32,6 +32,8 @@ export interface ShellProps {
   /** shadow root，弹层要挂进去（§10.10） */
   portalContainer?: HTMLElement | ShadowRoot;
   platformName: string;
+  /** 平台 id：标题栏左上角用它的 logo（没有图标时退回色点 + 名称） */
+  platformId?: string;
   platformColor?: string;
   platformRing?: string;
   /**
@@ -86,6 +88,7 @@ export function Shell(props: ShellProps) {
     store,
     portalContainer,
     platformName,
+    platformId,
     platformColor,
     platformRing,
     supportsMobileMode,
@@ -195,6 +198,7 @@ export function Shell(props: ShellProps) {
             {form === 'panel' ? (
               <Panel
                 platformName={platformName}
+                {...(platformId === undefined ? {} : { platformId })}
                 {...(platformColor === undefined ? {} : { platformColor })}
                 {...(platformRing === undefined ? {} : { platformRing })}
                 snapshot={snapshot}

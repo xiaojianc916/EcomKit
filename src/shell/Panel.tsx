@@ -7,6 +7,7 @@ import type { ProductSnapshot } from '../kernel/model/product';
 import { Tooltip } from '../kernel/ui-kit';
 import { type BlockerActionId, BlockerNotice } from './BlockerNotice';
 import { FeatureTabs } from './FeatureTabs';
+import { PlatformLogo } from './PlatformLogo';
 import { ProductHeader } from './ProductHeader';
 
 /**
@@ -26,6 +27,8 @@ import { ProductHeader } from './ProductHeader';
  */
 export interface PanelViewProps {
   platformName: string;
+  /** 平台 id：用它的 logo 做左上角图标（没有图标时退回色点 + 名称） */
+  platformId?: string;
   platformColor?: string;
   platformRing?: string;
   snapshot: ProductSnapshot | null;
@@ -61,6 +64,7 @@ export const PANEL_GAP = 16;
 
 export function Panel({
   platformName,
+  platformId,
   platformColor,
   platformRing,
   snapshot,
@@ -147,22 +151,34 @@ export function Panel({
           flex: 'none',
         }}
       >
-        {platformColor === undefined ? null : (
-          <span
-            aria-hidden="true"
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background: platformColor,
-              ...(platformRing === undefined ? {} : { boxShadow: `0 0 0 1px ${platformRing}` }),
-            }}
-          />
+        {/*
+          左上角是平台图标而不是「色点 + 平台名」：用户一眼就知道自己在哪个平台，
+          图标比两个汉字更省标题栏的宽度（360px 里还要放两个图标按钮）。
+          没有对应图标时退回色点 + 文字，不至于空一块。
+        */}
+        {platformId === undefined ? null : (
+          <PlatformLogo platformId={platformId} name={platformName} height={18} />
         )}
-        {/* 不写产品名：用户知道自己装的是什么（§10.3 ①） */}
-        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ec-text)' }}>
-          {platformName}
-        </span>
+        {platformId === undefined ? (
+          <>
+            {platformColor === undefined ? null : (
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: platformColor,
+                  ...(platformRing === undefined ? {} : { boxShadow: `0 0 0 1px ${platformRing}` }),
+                }}
+              />
+            )}
+            {/* 不写产品名：用户知道自己装的是什么（§10.3 ①） */}
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ec-text)' }}>
+              {platformName}
+            </span>
+          </>
+        ) : null}
         <span style={{ flex: 1 }} />
         {settingsVisible ? (
           <Tooltip content="返回素材">
