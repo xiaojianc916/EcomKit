@@ -346,9 +346,26 @@ export const DyPayloadSchema = z
   })
   .passthrough();
 
+/**
+ * findDyRoot 的结果缓存。
+ *
+ * 同一份抓包响应会被问好几次：matchesProductId() → draftFromPayload()。
+ * 抖音的响应动辄几 MB，每次都要把 8 条候选路径 × N 个字段路径跑一遍。
+ * 用 WeakMap 挂在 payload 对象上，对象被回收时缓存自动失效。
+ */
+const ROOT_CACHE = new WeakMap<object, unknown | null>();
+
 /** 在抓包响应里找商品容器；找不到返回 null */
 export function findDyRoot(payload: unknown): unknown | null {
   if (payload === null || typeof payload !== 'object') return null;
+  const cached = ROOT_CACHE.get(payload as object);
+  if (cached !== undefined) return cached;
+  const found = findDyRootUncached(payload);
+  ROOT_CACHE.set(payload as object, found);
+  return found;
+}
+
+function findDyRootUncached(payload: unknown): unknown | null {
   for (const path of DY_ROOT_PATHS) {
     const node = firstNonEmpty(payload, [path]);
     if (node === undefined || node === null || typeof node !== 'object') continue;

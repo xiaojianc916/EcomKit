@@ -38,7 +38,10 @@ function jpegSize(buf) {
   if (buf[0] !== 0xff || buf[1] !== 0xd8) return null;
   let i = 2;
   while (i < buf.length - 9) {
-    if (buf[i] !== 0xff) { i++; continue; }
+    if (buf[i] !== 0xff) {
+      i++;
+      continue;
+    }
     const marker = buf[i + 1];
     const len = (buf[i + 2] << 8) | buf[i + 3];
     if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
@@ -53,7 +56,11 @@ async function probe(url) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 25_000);
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: ctrl.signal, credentials: 'omit' });
+    const res = await fetch(url, {
+      headers: { 'User-Agent': UA },
+      signal: ctrl.signal,
+      credentials: 'omit',
+    });
     const buf = new Uint8Array(await res.arrayBuffer());
     const dims = pngSize(buf) ?? webpSize(buf) ?? jpegSize(buf);
     return { status: res.status, type: res.headers.get('content-type'), bytes: buf.length, dims };

@@ -13,6 +13,8 @@ import { NAME_LIMITS, sanitizeName, truncateGraphemes } from './sanitize';
 
 /** 匹配 {var} 或 {var:N} */
 const TOKEN_RE = /\{([A-Za-z_][A-Za-z0-9_]*)(?::(\d+))?\}/g;
+/** 已知变量集合：renderTemplate 每个 token 都要查一次，数组 includes 是 O(n) 且每次都新建 */
+const KNOWN_VARS: ReadonlySet<string> = new Set<string>(TEMPLATE_VARS);
 
 export interface TemplateVars {
   platform?: string;
@@ -31,10 +33,15 @@ export interface TemplateProblem {
 
 /** 模板里出现过的变量名（去重、按出现顺序） */
 export function collectTemplateVars(template: string): string[] {
+  // 用 Set 判重：模板最多七八个变量，但 out.includes 每次都要线性扫一遍，
+  // 而这里在设置页每次按键都会跑（实时预览）。
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const match of template.matchAll(TOKEN_RE)) {
     const name = match[1];
-    if (name && !out.includes(name)) out.push(name);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
   }
   return out;
 }
@@ -46,9 +53,8 @@ export function collectTemplateVars(template: string): string[] {
  */
 export function validateTemplate(template: string): TemplateProblem[] {
   const problems: TemplateProblem[] = [];
-  const known = new Set<string>(TEMPLATE_VARS);
   for (const name of collectTemplateVars(template)) {
-    if (!known.has(name)) problems.push({ kind: 'unknown-var', detail: name });
+    if (!KNOWN_VARS.has(name)) problems.push({ kind: 'unknown-var', detail: name });
   }
   if (!templateHasId(template)) problems.push({ kind: 'missing-id', detail: '{id}' });
   for (const match of template.matchAll(TOKEN_RE)) {
@@ -101,7 +107,7 @@ export function renderTemplate(
 ): string {
   const dateValue = vars.date === undefined ? (opts.now ?? Date.now()) : Number(vars.date);
   return template.replace(TOKEN_RE, (whole, name: string, len?: string) => {
-    if (!(TEMPLATE_VARS as readonly string[]).includes(name)) return whole;
+    if (!KNOWN_VARS.has(name)) return whole;
     const value = readVar(name, vars, dateValue);
     if (value === undefined) {
       if (name === 'id') throw new EcError('INTERNAL', { reason: 'template-missing-id' });

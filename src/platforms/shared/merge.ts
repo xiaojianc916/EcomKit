@@ -20,6 +20,9 @@ import {
 
 const PRIORITY: Record<DataSourceId, number> = { ssr: 3, capture: 2, dom: 1 };
 
+/** 快照里素材类别的固定输出顺序（决定文件序号与目录结构） */
+const ASSET_KIND_ORDER: readonly AssetKind[] = ['main', 'sku', 'detail', 'video'];
+
 export const SOURCE_PRIORITY: Readonly<Record<DataSourceId, number>> = PRIORITY;
 
 interface RankedAsset {
@@ -196,20 +199,29 @@ export class DraftAccumulator {
     return parsed.success ? parsed.data : null;
   }
 
-  /** 素材按类别聚合并重新编号：index 在每一类内部从 0 开始，决定文件序号 */
+  /**
+   * 素材按类别聚合并重新编号：index 在每一类内部从 0 开始，决定文件序号。
+   *
+   * assets 里的插入顺序就是 order 顺序（order 是单调递增的插入序号，中途只会删掉 DOM 占位），
+   * 所以遍历一次 Map 就能得到每类已排好序的列表，不用再按 order 排序。
+   * 这个方法在渐进解析里会被反复调用（每来一份 draft 一次），原来每次都要重建 Map + 排序。
+   */
   private buildAssets(): Asset[] {
-    const grouped = new Map<AssetKind, RankedAsset[]>();
+    const grouped = new Map<AssetKind, Asset[]>();
     for (const item of this.assets.values()) {
-      const list = grouped.get(item.asset.kind) ?? [];
-      list.push(item);
-      grouped.set(item.asset.kind, list);
+      const list = grouped.get(item.asset.kind);
+      if (list === undefined) grouped.set(item.asset.kind, [{ ...item.asset }]);
+      else list.push({ ...item.asset });
     }
     const out: Asset[] = [];
-    for (const kind of ['main', 'sku', 'detail', 'video'] as const) {
-      const list = (grouped.get(kind) ?? []).sort((a, b) => a.order - b.order);
-      list.forEach((item, i) => {
-        out.push(stripEmpty({ ...item.asset, index: i }));
-      });
+    for (const kind of ASSET_KIND_ORDER) {
+      const list = grouped.get(kind);
+      if (list === undefined) continue;
+      for (let i = 0; i < list.length; i += 1) {
+        const asset = list[i] as Asset;
+        asset.index = i;
+        out.push(stripEmpty(asset));
+      }
     }
     return out;
   }

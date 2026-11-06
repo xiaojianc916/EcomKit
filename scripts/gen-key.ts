@@ -13,7 +13,7 @@
  *   keys/public-key.b64    ← 公钥（base64），写进构建环境变量 ECBOX_PUBLIC_KEY
  *   keys/extension-id.txt  ← 由此公钥推导出的扩展 ID，方便核对
  */
-import { generateKeyPairSync, createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

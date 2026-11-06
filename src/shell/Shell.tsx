@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { StoreApi } from 'zustand';
 import { useStore } from 'zustand';
 import type { RegisteredFeature } from '../features/types';
@@ -13,13 +13,7 @@ import { pickActiveFeature } from './FeatureTabs';
 import { Handle } from './Handle';
 import { LiveRegionProvider } from './LiveRegion';
 import { Panel } from './Panel';
-import {
-  createShellStore,
-  type HandleBadge,
-  handleBadge,
-  type ShellStore,
-  themeAttr,
-} from './store';
+import { createShellStore, handleBadge, handleBadgeEq, type ShellStore, themeAttr } from './store';
 
 /**
  * 工具箱外壳（§10.2 三种形态、§10.9 组件树）。
@@ -78,6 +72,12 @@ function useShell<T>(store: ShellStore, selector: (state: ShellStoreState) => T)
 
 type ShellStoreState = ReturnType<ShellStore['getState']>;
 
+const selectForm = (s: ShellStoreState) => s.form;
+const selectHandleY = (s: ShellStoreState) => s.handleY;
+const selectViewportHeight = (s: ShellStoreState) => s.viewportHeight;
+const selectTheme = (s: ShellStoreState) => s.theme;
+const selectActiveFeature = (s: ShellStoreState) => s.activeFeature;
+
 export function Shell(props: ShellProps) {
   const {
     store,
@@ -104,12 +104,12 @@ export function Shell(props: ShellProps) {
     now,
   } = props;
 
-  const form = useShell(store, (s) => s.form);
-  const handleY = useShell(store, (s) => s.handleY);
-  const viewportHeight = useShell(store, (s) => s.viewportHeight);
+  const form = useShell(store, selectForm);
+  const handleY = useShell(store, selectHandleY);
+  const viewportHeight = useShell(store, selectViewportHeight);
 
-  const themeSetting = useShell(store, (s) => s.theme);
-  const activeFeature = useShell(store, (s) => s.activeFeature);
+  const themeSetting = useShell(store, selectTheme);
+  const activeFeature = useShell(store, selectActiveFeature);
 
   // 主题：跟随系统时不写属性，靠 tokens.css 的 prefers-color-scheme（§10.6）
   const themeValue = themeAttr(themeSetting);
@@ -117,18 +117,6 @@ export function Shell(props: ShellProps) {
   const effectiveFeature = useMemo(
     () => pickActiveFeature(features, activeFeature),
     [features, activeFeature],
-  );
-
-  const badge: HandleBadge = useMemo(
-    () =>
-      handleBadge({
-        status: status === 'blocked' ? 'blocked' : status === 'ready' ? 'ready' : 'resolving',
-        total: totalAssets,
-        job,
-        now,
-        needsAttention,
-      }),
-    [status, totalAssets, job, now, needsAttention],
   );
 
   const setForm = store.getState().setForm;
@@ -139,6 +127,22 @@ export function Shell(props: ShellProps) {
     },
     [setForm, onFormChange],
   );
+
+  // 这些回调一旦每次渲染都新建，下面 memo 过的子组件就白 memo 了
+  const onDragEnd = useCallback(
+    (y: number) => {
+      store.getState().setHandleY(y);
+    },
+    [store],
+  );
+  const onHandleClick = useCallback(() => changeForm('panel'), [changeForm]);
+  const onSelectFeature = useCallback(
+    (id: string) => {
+      store.getState().setActiveFeature(id);
+    },
+    [store],
+  );
+  const onClose = useCallback(() => changeForm('handle'), [changeForm]);
 
   // Alt+Shift+E 展开/收起由 entrypoints 的快捷键负责（§10.5），
   // 这里只处理面板内的 Esc（在 Panel 里注册）。
@@ -157,14 +161,23 @@ export function Shell(props: ShellProps) {
             style={rootStyle}
           >
             {form === 'handle' ? (
-              <Handle
-                y={handleY}
-                badge={badge}
+              /*
+                角标单独成组件：now 每 250ms 变一次，而它**只**被角标用。
+                留在 Shell 里算的话，那个 3 秒的完成态窗口每 250ms 都会让整个外壳
+                （含 Panel 与功能面板）重渲染一次。拆出去之后，now 的变化只重渲染这一小块。
+              */
+              <HandleBadgeView
+                status={status}
+                total={totalAssets}
+                job={job}
+                now={now}
+                needsAttention={needsAttention}
+                handleY={handleY}
+                viewportHeight={viewportHeight}
                 {...(platformColor === undefined ? {} : { platformColor })}
                 {...(platformRing === undefined ? {} : { platformRing })}
-                viewportHeight={viewportHeight}
-                onDragEnd={(y) => store.getState().setHandleY(y)}
-                onClick={() => changeForm('panel')}
+                onDragEnd={onDragEnd}
+                onClick={onHandleClick}
               />
             ) : null}
 
@@ -179,8 +192,8 @@ export function Shell(props: ShellProps) {
                 top={handleY}
                 features={features}
                 activeFeature={effectiveFeature}
-                onSelectFeature={(id) => store.getState().setActiveFeature(id)}
-                onClose={() => changeForm('handle')}
+                onSelectFeature={onSelectFeature}
+                onClose={onClose}
                 onOpenOptions={onOpenOptions}
                 onCopy={onCopy}
                 onBlockerAction={onBlockerAction}
@@ -205,6 +218,81 @@ export function Shell(props: ShellProps) {
   );
 }
 
+interface HandleBadgeViewProps {
+  status: ShellProps['status'];
+  total: number;
+  job: JobRecord | null;
+  now: number;
+  needsAttention: boolean;
+  handleY: number;
+  viewportHeight: number;
+  platformColor?: string;
+  platformRing?: string;
+  onDragEnd(y: number): void;
+  onClick(): void;
+}
+
+/**
+ * 把手 + 角标（只有这一小块依赖 now）。
+ *
+ * 角标按「内容相等」复用引用：进度每 200ms 推一次，同一次推送里算出来的
+ * { kind: 'progress', percent: 42 } 和上一次往往一模一样，内容没变就不该换对象，
+ * Handle 也就不用重渲染（从而不会打断正在进行的拖动 = pointermove 掉帧）。
+ */
+function HandleBadgeView(props: HandleBadgeViewProps) {
+  const {
+    status,
+    total,
+    job,
+    now,
+    needsAttention,
+    handleY,
+    viewportHeight,
+    platformColor,
+    platformRing,
+    onDragEnd,
+    onClick,
+  } = props;
+
+  const badge = useMemo(
+    () =>
+      handleBadge({
+        status: status === 'blocked' ? 'blocked' : status === 'ready' ? 'ready' : 'resolving',
+        total,
+        job,
+        now,
+        needsAttention,
+      }),
+    [status, total, job, now, needsAttention],
+  );
+  const stableBadge = useStableByValue(badge, handleBadgeEq);
+
+  return (
+    <Handle
+      y={handleY}
+      badge={stableBadge}
+      {...(platformColor === undefined ? {} : { platformColor })}
+      {...(platformRing === undefined ? {} : { platformRing })}
+      viewportHeight={viewportHeight}
+      onDragEnd={onDragEnd}
+      onClick={onClick}
+    />
+  );
+}
+
+/**
+ * 值相等时复用上一次的引用。
+ *
+ * 典型用法：每次渲染都算出 { kind: 'progress', percent: 42 } 这种小对象，
+ * 但内容没变时下游组件不该重渲染。useMemo 只能按依赖数组缓存，
+ * 按「算出来之后再比一次」的场景需要这个（React 官方文档里 useMemo 一节的同款写法）。
+ */
+function useStableByValue<T>(value: T, eq: (a: T, b: T) => boolean): T {
+  const ref = useRef(value);
+  if (!eq(ref.current, value)) ref.current = value;
+  return ref.current;
+}
+
 /**
  * 给 entrypoints 用的便捷构造函数：把「创建 store + 监听 resize」这套样板收在一起。
  * 返回 store 和清理函数，避免调用方忘记解绑 resize。
@@ -224,10 +312,31 @@ export function mountShellStore(opts: {
     viewportWidth: window.innerWidth,
     viewportHeight: window.innerHeight,
   });
-  const onResize = (): void => store.getState().setViewport(window.innerWidth, window.innerHeight);
+
+  /**
+   * resize 一帧最多处理一次，而不是一事件一次。
+   *
+   * 真实边界：拖动浏览器窗口边缘时 resize 事件按帧（甚至更密）触发，每个事件里
+   * setViewport 都会让订阅 viewportHeight 的外壳重渲染，并且继续触发
+   * clampHandleY → set({ handleY }) → 再渲染一次，一次拖动就是几百次无效渲染。
+   * 用 rAF 把同一帧里的多次事件压成一次；rAF 在标签页不可见时本来就不跑，
+   * 顺带省掉后台开销。
+   */
+  let frame: number | null = null;
+  const onResize = (): void => {
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      store.getState().setViewport(window.innerWidth, window.innerHeight);
+    });
+  };
   window.addEventListener('resize', onResize);
   return {
     store,
-    dispose: () => window.removeEventListener('resize', onResize),
+    dispose: () => {
+      window.removeEventListener('resize', onResize);
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+    },
   };
 }

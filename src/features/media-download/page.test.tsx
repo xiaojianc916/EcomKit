@@ -330,6 +330,38 @@ describe('MediaDownloadPanel 组装（§8.6）', () => {
   });
 });
 
+describe('性能：订阅切片与计划复用（§10.9）', () => {
+  it('进度推送不会重建面板结构，也不会丢掉已展开的网格', () => {
+    const spy = makeApi();
+    const { container } = renderPanel(spy);
+    const panelRoot = container.firstElementChild as HTMLElement;
+
+    // 展开详情图网格（26 格），再推几次进度
+    fireEvent.click(screen.getByRole('button', { name: '展开详情图' }));
+    expect(screen.getByText('已选 0 / 26')).toBeInTheDocument();
+
+    act(() => spy.pushJob(makeJob()));
+    act(() => spy.pushJob(makeJob({ done: 12 })));
+    act(() => spy.pushJob(makeJob({ done: 20 })));
+
+    // 行还是四行、网格还开着，且面板根节点没被卸载重建
+    expect(screen.getAllByRole('listitem')).toHaveLength(4);
+    expect(screen.getByText('已选 0 / 26')).toBeInTheDocument();
+    expect(container.firstElementChild).toBe(panelRoot);
+  });
+
+  it('挑选模式下主按钮数量跟着选中项走，退出后回到按类别计数', () => {
+    const spy = makeApi();
+    renderPanel(spy);
+    fireEvent.click(screen.getByRole('button', { name: '展开详情图' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择第 1 个素材' }));
+    expect(screen.getByRole('button', { name: '下载所选 1 个' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '清除' }));
+    expect(screen.getByRole('button', { name: /下载 34 个文件/ })).toBeInTheDocument();
+  });
+});
+
 describe('mediaBadge / mediaQuickActions（§8.5 插槽）', () => {
   it('badge 是可下载素材总数', () => {
     expect(mediaBadge(snapshot())).toBe(34);

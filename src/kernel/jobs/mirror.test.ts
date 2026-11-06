@@ -94,4 +94,41 @@ describe('createMirrorStore（storage.session）', () => {
     const recovered = await store.recover(true);
     expect(recovered[0]?.status).toBe('running');
   });
+
+  it('recover：标成 interrupted 的记录要写回镜像，不能被写没了', async () => {
+    const area = createMemorySessionArea();
+    const store = createMirrorStore({ area });
+    await store.write([job('a', 'running'), job('b', 'done')]);
+    await store.recover(false);
+    // 再读一次：镜像是全新的 store 读取的，不能依赖 recover 的返回值
+    const reread = await createMirrorStore({ area }).read();
+    expect(reread.map((j) => j.status)).toEqual(['interrupted', 'done']);
+  });
+
+  it('写入时剥掉 payload（storage.session 只有 10MB 配额）', async () => {
+    const area = createMemorySessionArea();
+    const store = createMirrorStore({ area });
+    const heavy = { ...job('a'), payload: { snapshot: 'x'.repeat(1024) } };
+    await store.write([heavy]);
+    const raw = (await area.get('jobs.mirror'))['jobs.mirror'] as {
+      jobs: Array<{ payload: unknown }>;
+    };
+    expect(raw.jobs[0]?.payload).toBeNull();
+    // 读回来仍然是一条可用记录
+    expect((await store.read())[0]?.id).toBe('a');
+  });
+
+  it('缺 byGroup / skipped / bytes 的旧镜像记录会被过滤掉（UI 会直接读这些字段）', () => {
+    const good = job('a');
+    const legacy = {
+      id: 'b',
+      type: 't',
+      status: 'done',
+      dedupeKey: 'k',
+      total: 1,
+      done: 1,
+      failed: [],
+    };
+    expect(parseMirror({ jobs: [good, legacy] }).map((j) => j.id)).toEqual(['a']);
+  });
 });

@@ -45,6 +45,17 @@ export function getDb(): Promise<IDBPDatabase<EcboxDB>> {
       // 另一个上下文要升级数据库：先关掉自己，避免整页卡住
       void closeDb();
     },
+    /**
+     * 数据库被别人关掉 / 版本变更导致本连接失效后走这里（Chrome 57+ 的官方回调）。
+     *
+     * 关键是把缓存的 dbPromise 清掉：不清的话所有后续调用都会拿到一个**已关闭**的
+     * 数据库句柄，每个 get/put 都抛 InvalidStateError 且永不恢复 ——
+     * 真实场景：用户在另一个窗口更新扩展（或手动清站点数据）触发版本升级。
+     * 清空之后下一次 getDb() 会重新 openDB（openDB 自己也带 blocked/blocking 处理）。
+     */
+    terminated() {
+      dbPromise = null;
+    },
   });
   return dbPromise;
 }
@@ -86,16 +97,24 @@ export async function kvDel<S extends StoreName>(store: S, key: StoreKeyMap[S]):
   await db.delete(store, key);
 }
 
-/** 列出某个 store 的全部记录（诊断包和清理数据用） */
+/**
+ * 列出某个 store 的全部记录（诊断包和清理数据用）。
+ *
+ * 用一次游标遍历同时拿到 key + value：原来的 getAllKeys() + getAll() 是两个请求，
+ * 每个请求都要单独把整份结果反序列化一遍再按数组下标对齐（hidden-class 上是两倍内存峰值）。
+ * 诊断包的 logs store 上限 2000 条、downloads 几百条，这个差别在「生成诊断包」时能感觉到。
+ */
 export async function kvList<S extends StoreName, T = unknown>(
   store: S,
 ): Promise<Array<{ key: StoreKeyMap[S]; value: T }>> {
   const db = await getDb();
-  const tx = db.transaction(store, 'readonly');
-  const keys = await tx.objectStore(store).getAllKeys();
-  const values = await tx.objectStore(store).getAll();
-  await tx.done;
-  return keys.map((key, i) => ({ key: key as StoreKeyMap[S], value: values[i] as T }));
+  const out: Array<{ key: StoreKeyMap[S]; value: T }> = [];
+  let cursor = await db.transaction(store, 'readonly').store.openCursor();
+  while (cursor) {
+    out.push({ key: cursor.key as unknown as StoreKeyMap[S], value: cursor.value as T });
+    cursor = await cursor.continue();
+  }
+  return out;
 }
 
 export async function kvClear(store: StoreName): Promise<void> {

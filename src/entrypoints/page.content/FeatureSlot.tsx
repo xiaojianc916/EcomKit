@@ -16,6 +16,7 @@ import type { JobRecord } from '../../kernel/jobs/types';
 import { createLogger } from '../../kernel/log/logger';
 import type { ProductSnapshot } from '../../kernel/model/product';
 import { createFeatureSettings, getSettings } from '../../kernel/settings/store';
+import { setActiveFeatureId } from './page-api';
 
 const log = createLogger('feature-slot');
 
@@ -116,6 +117,15 @@ export function FeatureSlot(props: FeatureSlotProps) {
       .catch((e) => log.warn('feature load failed', e));
     return () => {
       alive = false;
+    };
+  }, [feature]);
+
+  // 面板渲染期间把功能 id 登记给 PageApi：它决定了 prefs.get/set 和 api.call 落在哪个功能上。
+  // 旧实现每次调用都去 DOM 里 querySelector，而 prefs.get 是每次渲染都会走的热路径。
+  useEffect(() => {
+    setActiveFeatureId(feature.manifest.id);
+    return () => {
+      setActiveFeatureId(null);
     };
   }, [feature]);
 

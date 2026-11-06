@@ -20,10 +20,16 @@ const KIND_LABEL: Record<AssetKind, string> = {
 };
 const KIND_ORDER: AssetKind[] = ['main', 'sku', 'detail', 'video'];
 
+/** popup 打开时页面可能还在识别：最多等这么久（30 × 400ms） */
+const POLL_TRIES = 30;
+const POLL_INTERVAL_MS = 400;
+
 export function PopupApp() {
   const [state, setState] = useState<TabState | null>(null);
   const [loading, setLoading] = useState(true);
   const [checked, setChecked] = useState<Set<AssetKind>>(new Set(KIND_ORDER));
+  /** 命令发不出去时的说明（页面没注入 / 扩展刚更新）：popup 不能静默关门 */
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     // popup 打开时页面可能还在识别：识别中就每 400ms 再问一次，直到有结论（最多约 12 秒）。
@@ -33,7 +39,9 @@ export function PopupApp() {
     let tries = 0;
     const poll = async () => {
       try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        // activeTab 在 popup 打开时已经授予，用 lastFocusedWindow 更准：
+        // 用户点扩展图标时焦点一定在这个窗口上，而 currentWindow 在多窗口场景下可能取到别的。
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (!tab?.id) {
           if (!cancelled) setLoading(false);
           return;
@@ -42,9 +50,16 @@ export function PopupApp() {
         if (cancelled) return;
         setState(s);
         const pending = s.matched && (s.status === 'detecting' || s.status === 'resolving');
-        if (pending && tries++ < 30) timer = setTimeout(() => void poll(), 400);
+        if (pending && tries++ < POLL_TRIES)
+          timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
       } catch {
-        if (!cancelled) setState(null);
+        // 背景还没醒（MV3 SW 冷启动）或页面正在导航：再试一次，直到用完次数
+        if (cancelled) return;
+        if (tries++ < POLL_TRIES) {
+          timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
+        } else {
+          setState(null);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -65,12 +80,45 @@ export function PopupApp() {
     setChecked(next);
   };
 
+  /**
+   * 发命令。**失败必须可见**：popup 里点击按钮后窗口会立刻关闭，
+   * 如果 sendMessage 抛错（页面没注入、扩展刚更新导致 context invalidated），
+   * 用户看到的就是「点了下载，什么都没发生」。所以先 await，成功才关窗。
+   */
+  const download = async (kinds?: AssetKind[]): Promise<void> => {
+    try {
+      await sendDownloadCommand(kinds);
+      window.close();
+    } catch {
+      setError('这个页面没有加载工具箱，请刷新商品页后重试');
+    }
+  };
+
   if (loading) {
     return (
       <main className="pp">
         <header className="pp__hdr">电商素材工具箱</header>
         <div className="pp__body">
           <p className="pp__empty">正在读取当前页面…</p>
+        </div>
+      </main>
+    );
+  }
+
+  // 命令发送失败要压过其它所有分支：否则「点了下载没反应」时用户看到的是页面信息，
+  // 完全不知道刚才那一下发生了什么。
+  if (error !== null) {
+    return (
+      <main className="pp">
+        <header className="pp__hdr">
+          <span className="pp__dot" />
+          电商素材工具箱
+        </header>
+        <div className="pp__body">
+          <p className="pp__empty">{error}</p>
+          <button type="button" className="pp__primary" onClick={() => setError(null)}>
+            返回
+          </button>
         </div>
       </main>
     );
@@ -148,7 +196,9 @@ export function PopupApp() {
           type="button"
           className="pp__primary"
           disabled={total === 0}
-          onClick={() => void download()}
+          // 必须把 popup 上**实际勾选**的类别传下去：旧实现传 undefined，页面收到
+          // 'download-checked' 就按「全部类别」下发，用户取消勾选「视频」也照样会下。
+          onClick={() => void download([...KIND_ORDER].filter((k) => checked.has(k)))}
         >
           {total === 0 ? '请先勾选要下载的素材' : `下载 ${total} 个文件`}
         </button>
@@ -188,9 +238,9 @@ function dirLabel(state: TabState | null): string {
  * 旧实现忽略 popup 上的勾选框，永远发 'download-checked' ——
  * 用户取消勾选「视频」后点下载，视频照样会下。
  */
-async function download(kinds?: AssetKind[]): Promise<void> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+async function sendDownloadCommand(kinds?: AssetKind[]): Promise<void> {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab?.id) throw new Error('no-tab');
   const command =
     kinds === undefined || kinds.length === 0
       ? 'download-checked'
@@ -198,5 +248,4 @@ async function download(kinds?: AssetKind[]): Promise<void> {
         ? `download-${kinds[0]}`
         : `download-kinds:${kinds.join(',')}`;
   await chrome.tabs.sendMessage(tab.id, { type: 'ecbox:command', command });
-  window.close();
 }

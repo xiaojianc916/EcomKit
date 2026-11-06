@@ -264,11 +264,13 @@ export async function resetUiPrefsForSite(siteKey: string): Promise<UiPrefs> {
 /**
  * 读功能设置（给 page 侧用：它只拿到功能 id 和 manifest 里的 schema）。
  *
- * 为什么不直接用 featureSettings()：page 侧是从 `features/registry.page` 动态拿到的
- * manifest.settings，schema 和 defaults 都在里面，没必要再建一个缓存表。
+ * 走 featureSettings() 的缓存表而不是每次 createFeatureSettings()：
+ * 后者每次调用都会执行一次 storage.defineItem()（WXT 内部要建 item 对象、挂 watch 分发），
+ * 而 page 侧的 FeatureSlot 每个功能挂载时都读一次设置，面板反复开关就是反复重建。
+ * 缓存键是 featureId，同一个功能拿到的 schema/defaults 是同一份 manifest 引用，不会串。
  */
 export async function readFeatureSettings<T>(options: FeatureSettingsOptions<T>): Promise<T> {
-  return createFeatureSettings(options).get();
+  return featureSettings(options).get();
 }
 
 /** 写功能设置（同上，page 侧改设置时用） */
@@ -276,5 +278,5 @@ export async function writeFeatureSettings<T>(
   options: FeatureSettingsOptions<T>,
   next: T,
 ): Promise<T> {
-  return createFeatureSettings(options).set(next);
+  return featureSettings(options).set(next);
 }

@@ -3,7 +3,7 @@ import type {
   ReactNode,
   PointerEvent as ReactPointerEvent,
 } from 'react';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { HandleBadge } from './store';
 import { clampHandleY, HANDLE_MIN_Y, isDrag } from './store';
 
@@ -45,6 +45,32 @@ export function Handle({
 }: HandleProps) {
   const [dragY, setDragY] = useState<number | null>(null);
   const startRef = useRef<{ pointerY: number; originY: number; moved: boolean } | null>(null);
+  /**
+   * 拖动位置一帧最多更新一次。
+   *
+   * 真实边界：高刷屏 / 精密触控板把 pointermove 推到 120–240Hz，而屏幕只刷新 60–120Hz。
+   * 每个 pointermove 都 setDragY 的话，一帧内会做几次**白做**的渲染（React 合并了 setState，
+   * 但事件回调、clampHandleY、样式对象都白算）。用 rAF 把同一帧的多次移动压成一次，
+   * 拖动只跟渲染帧对齐，手感不变而渲染次数减半以上。
+   */
+  const frameRef = useRef<number | null>(null);
+  const pendingYRef = useRef<number | null>(null);
+
+  const flushDragFrame = useCallback(() => {
+    frameRef.current = null;
+    const next = pendingYRef.current;
+    pendingYRef.current = null;
+    if (next !== null) setDragY(next);
+  }, []);
+
+  // 卸载时取消还没执行的那一帧，避免对已卸载组件 setState
+  useEffect(() => {
+    return () => {
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+      pendingYRef.current = null;
+    };
+  }, []);
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -68,9 +94,11 @@ export function Handle({
       const dy = event.clientY - start.pointerY;
       if (!start.moved && !isDrag(0, dy)) return;
       start.moved = true;
-      setDragY(clampHandleY(start.originY + dy, viewportHeight));
+      pendingYRef.current = clampHandleY(start.originY + dy, viewportHeight);
+      if (frameRef.current !== null) return;
+      frameRef.current = requestAnimationFrame(flushDragFrame);
     },
-    [viewportHeight],
+    [viewportHeight, flushDragFrame],
   );
 
   const handlePointerUp = useCallback(
@@ -85,6 +113,10 @@ export function Handle({
         // 同上：不支持指针捕获时忽略
       }
       if (!start) return;
+      // 拖动中可能还有一帧没画完，松手时按真实指针位置收尾并丢掉那一帧
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+      pendingYRef.current = null;
       if (start.moved) {
         const finalY = clampHandleY(
           start.originY + (event.clientY - start.pointerY),
@@ -130,6 +162,9 @@ export function Handle({
       onPointerUp={handlePointerUp}
       onPointerCancel={() => {
         startRef.current = null;
+        if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+        pendingYRef.current = null;
         setDragY(null);
       }}
       onKeyDown={handleKeyDown}

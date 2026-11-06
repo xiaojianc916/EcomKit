@@ -36,21 +36,23 @@ export function createScheduler(): Scheduler {
   const byDedupeKey = new Map<string, string>();
   let cursor = 0;
 
-  function prune(): void {
-    for (const [jobId, job] of jobs) {
-      if (!isActive(job)) {
-        jobs.delete(jobId);
-        if (byDedupeKey.get(job.dedupeKey) === jobId) byDedupeKey.delete(job.dedupeKey);
-      }
-    }
-  }
-
   const scheduler: Scheduler = {
+    /**
+     * 不再「每次 submit 全表 prune」（旧实现那样做）。
+     *
+     * 这张表里不会残留已结束的任务：finish() 在 done / failed / partial / canceled /
+     * interrupted 五条收尾路径上都会把记录删掉（runner 里逐个核对过），
+     * 而 submit 之后到 finish 之前，状态只会在 queued ↔ running 之间迁移。
+     * 那次全表扫描永远扫不出东西，纯粹让「连点下载」变成 O(n)。
+     * 万一真有陈旧记录（调用方自己把 status 改成终态却没调 finish），
+     * 下面「已有记录但不再活跃」的分支会顺手覆盖掉它。
+     */
     submit(job) {
-      prune();
       const existingId = byDedupeKey.get(job.dedupeKey);
       const existing = existingId === undefined ? undefined : jobs.get(existingId);
       if (existing && isActive(existing)) return { kind: 'duplicate', existing };
+      // 走到这里说明 dedupeKey 上没有活跃任务：可能是一条陈旧的映射（防御性清理）
+      if (existingId !== undefined) byDedupeKey.delete(job.dedupeKey);
 
       jobs.set(job.id, job);
       byDedupeKey.set(job.dedupeKey, job.id);
@@ -71,19 +73,32 @@ export function createScheduler(): Scheduler {
     },
 
     pending() {
-      return [...jobs.values()].filter((job) => job.status === 'queued');
+      const out: JobRecord[] = [];
+      for (const job of jobs.values()) if (job.status === 'queued') out.push(job);
+      return out;
     },
 
     active() {
-      return [...jobs.values()].filter(isActive);
+      const out: JobRecord[] = [];
+      for (const job of jobs.values()) if (isActive(job)) out.push(job);
+      return out;
     },
 
     nextRotation() {
-      const list = [...jobs.values()].filter(isActive);
-      if (list.length === 0) return [];
-      const start = cursor % list.length;
-      const ordered = [...list.slice(start), ...list.slice(0, start)];
-      cursor = (cursor + 1) % list.length;
+      // 只建一次数组：旧实现建了两个（filter 出一个 + 拼出旋转后的另一个），
+      // 而且每次都要复制两段。这里直接按轮转游标出序号，调用方拿到的是同一批记录。
+      const list: JobRecord[] = [];
+      for (const job of jobs.values()) if (isActive(job)) list.push(job);
+      const size = list.length;
+      if (size === 0) {
+        cursor = 0;
+        return list;
+      }
+      const start = cursor % size;
+      cursor = (start + 1) % size;
+      if (start === 0) return list;
+      const ordered: JobRecord[] = new Array(size);
+      for (let i = 0; i < size; i += 1) ordered[i] = list[(start + i) % size] as JobRecord;
       return ordered;
     },
 

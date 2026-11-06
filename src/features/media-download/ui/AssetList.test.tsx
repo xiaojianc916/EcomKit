@@ -264,6 +264,33 @@ describe('缩略图网格（§10.3）', () => {
   });
 });
 
+describe('缩略图网格分批渲染（200 张详情图的真实场景）', () => {
+  it('超过一批时只渲染第一批，并给出「继续加载」', () => {
+    renderList({ expandedKind: 'detail', detailCount: 200 });
+    // 第一批 60 格，其余延后
+    expect(screen.getAllByRole('button', { name: /选择第 |取消选择第 / })).toHaveLength(60);
+    expect(screen.getByRole('button', { name: '继续加载（还有 140 个）' })).toBeInTheDocument();
+  });
+
+  it('点「继续加载」多放一批，序号仍然按整个类别算', () => {
+    renderList({ expandedKind: 'detail', detailCount: 200 });
+    fireEvent.click(screen.getByRole('button', { name: '继续加载（还有 140 个）' }));
+    expect(screen.getAllByRole('button', { name: /选择第 |取消选择第 / })).toHaveLength(120);
+    // 第 61 个格子的序号是 61，不是 01
+    expect(screen.getByRole('button', { name: '选择第 61 个素材' })).toBeInTheDocument();
+  });
+
+  it('不超过一批时不出现「继续加载」', () => {
+    renderList({ expandedKind: 'detail', detailCount: 26 });
+    expect(screen.queryByRole('button', { name: /继续加载/ })).toBeNull();
+  });
+
+  it('工具条上的「已选 N / 总数」用的是整个类别的总数，不是已渲染数', () => {
+    renderList({ expandedKind: 'detail', detailCount: 200 });
+    expect(screen.getByText('已选 0 / 200')).toBeInTheDocument();
+  });
+});
+
 describe('countAssets / isAllChecked', () => {
   it('统计所有类别的素材总数', () => {
     const byKind = groupAssetsByKind([

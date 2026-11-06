@@ -53,6 +53,9 @@ export function backoffDelay(attempt: number, random: () => number = Math.random
   return Math.round(base * factor);
 }
 
+/** 秒数形态：整数或小数。写在模块级只编译一次，不在每次解析时重建 */
+const SECONDS_RE = /^\d+(\.\d+)?$/;
+
 /** 解析 Retry-After：既可以是秒数，也可以是 HTTP 日期（§9.7 没有明说，两种都要支持） */
 export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number | null {
   if (!value) return null;
@@ -62,7 +65,9 @@ export function parseRetryAfter(value: string | null | undefined, now = Date.now
   // 负数不是合法的 Retry-After；先挡掉，否则会被 Date.parse 当成「公元前 1 年」这种怪值
   if (trimmed.startsWith('-')) return null;
 
-  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+  // 只可能是秒数或 HTTP 日期两种形态；先按「第一个字符是数字」粗筛，
+  // 绝大多数 429 响应都带 "Retry-After: 5" 这种秒数，正则本身是预编译的，不必每次重建
+  if (SECONDS_RE.test(trimmed)) {
     const seconds = Number(trimmed);
     if (!Number.isFinite(seconds) || seconds < 0) return null;
     return Math.min(Math.round(seconds * 1000), MAX_RETRY_AFTER_MS);
@@ -87,23 +92,36 @@ export interface RetryOptions {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
-/** 可中断的等待：取消时立刻结束，不拖到超时 */
+/**
+ * 可中断的等待：取消时立刻结束，不拖到超时。
+ *
+ * 用官方能力代替手搓的 `new Promise + setTimeout + addEventListener + 手动清理`：
+ *  `AbortSignal.timeout` 负责「到点」、`AbortSignal.any` 把外部取消合成进来，
+ *  `Promise.withResolvers` 拿到不受 executor 约束的 resolve/reject。
+ * 好处不只是少几行：监听器挂在**临时派生信号**上，而不是任务级那个长生命周期的
+ * `opts.signal` —— 一次下载最多退避 3 次，几百张图就是几百次往同一个 signal 上挂监听。
+ *
+ * 版本：`AbortSignal.any` 要 Chrome 116+，`AbortSignal.timeout` 要 103+，
+ * 本项目下限 Chrome 122，两者都可用（122 的 timeout 会以 TimeoutError 中止，
+ * 但这里只用「它中止了」这个事实，不依赖错误类型）。
+ */
 export function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new EcError('CANCELED'));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new EcError('CANCELED'));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
+  if (signal.aborted) return Promise.reject(new EcError('CANCELED'));
+
+  const deadline = AbortSignal.timeout(ms);
+  const wake = AbortSignal.any([signal, deadline]);
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+
+  wake.addEventListener(
+    'abort',
+    () => {
+      // 外部取消 → CANCELED；只是到点了 → 正常结束
+      if (signal.aborted) reject(new EcError('CANCELED'));
+      else resolve();
+    },
+    { once: true },
+  );
+  return promise;
 }
 
 /**

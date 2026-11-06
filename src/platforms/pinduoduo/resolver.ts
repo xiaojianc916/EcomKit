@@ -2,7 +2,7 @@ import type { ErrorCode } from '../../kernel/errors/codes';
 import type { Asset } from '../../kernel/model/asset';
 import type { ProductDraft, Sku } from '../../kernel/model/product';
 import { parseExpiry } from '../../kernel/net/expiry';
-import { allowedUrls, isAllowedCdnUrl } from '../shared/cdn';
+import { isAllowedCdnUrl } from '../shared/cdn';
 import { collectDomImages, type DomImageRules } from '../shared/dom-heuristics';
 import { assetKeyFromUrl } from '../shared/html-images';
 import { readInlineGlobal } from '../shared/inline-ssr';
@@ -352,9 +352,11 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 /** 先按类名规则找；拼多多 H5 的类名是编译后的短哈希，规则落空时用「CDN 大图」启发式 */
 export function collectPddDomAssets(doc: Document, productId: string): Asset[] {
   const picked = collectDomImages(doc, PDD_DOM_RULES);
-  const byRules = [...picked.main, ...picked.detail, ...picked.sku].filter((a) =>
-    a.candidates.some((u) => isAllowedCdnUrl(u, CDN_HOSTS)),
-  );
+  // 每个素材的候选地址同源（同一个 img 派生），判第一个就够了 —— 原来是把所有候选全跑一遍
+  const byRules = [...picked.main, ...picked.detail, ...picked.sku].filter((a) => {
+    const first = a.candidates[0];
+    return first !== undefined && isAllowedCdnUrl(first, CDN_HOSTS);
+  });
   if (byRules.length > 0) return byRules;
   return collectLargeCdnImages(doc, productId);
 }
@@ -433,7 +435,7 @@ function collectLargeCdnImages(doc: Document, productId: string): Asset[] {
   }
 
   const toAsset = (url: string, kind: 'main' | 'detail', index: number): Asset => {
-    const candidates = allowedUrls(originalImageCandidates(url, base), CDN_HOSTS, base);
+    const candidates = dedupeAllowed(originalImageCandidates(url, base));
     const preview = thumbnailUrl(url, 200, base);
     return {
       key: assetKeyFromUrl(candidates[0] ?? url),
@@ -551,10 +553,14 @@ export function draftFromPayload(
   const mainKeys = new Set(assets.map((a) => a.key));
   let detailImages: PddRawImage[] = normalizeImageList(readArray(goods, PDD_DETAIL_IMAGE_PATHS));
   if (detailImages.length === 0 && scanRoot) detailImages = deep().detail;
+  // 详情图之间也可能重复（deep() 只用 url 去重，主图/详情图用的是 assetKey），所以边加边查
+  const detailKeys = new Set<string>();
   detailImages.forEach((img, i) => {
     const asset = toPddImageAsset(img, { kind: 'detail', index: i, base });
     // 主图数组和详情图数组偶尔指向同一批图，按 key 去重
-    if (asset && !mainKeys.has(asset.key)) assets.push(asset);
+    if (!asset || mainKeys.has(asset.key) || detailKeys.has(asset.key)) return;
+    detailKeys.add(asset.key);
+    assets.push(asset);
   });
 
   const skuPart = buildSkus(goods, base);
@@ -564,7 +570,7 @@ export function draftFromPayload(
   assets.push(...videos);
 
   const safeAssets = assets
-    .map((asset) => withAllowedCandidates(asset, base))
+    .map((asset) => withAllowedCandidates(asset))
     .filter((asset): asset is Asset => asset !== null);
 
   if (safeAssets.length > 0) draft.assets = safeAssets;
@@ -573,9 +579,15 @@ export function draftFromPayload(
   return draft;
 }
 
-/** 候选地址过 CDN 白名单；缩略图也必须是白名单内的地址（§13.4） */
-function withAllowedCandidates(asset: Asset, base: string): Asset | null {
-  const candidates = allowedUrls(asset.candidates, CDN_HOSTS, base);
+/**
+ * 候选地址过 CDN 白名单；缩略图也必须是白名单内的地址（§13.4）。
+ *
+ * 候选地址在这一步之前已经由 normalizeUrl 规范化过（各 to*Asset 都走它），
+ * 再让 allowedUrls 跑一遍 normalizeUrl 是纯重复解析；这里直接判白名单 + 去重。
+ * 单条候选（视频）尤其明显：原来每行视频要完整解析两遍同一个地址。
+ */
+function withAllowedCandidates(asset: Asset): Asset | null {
+  const candidates = dedupeAllowed(asset.candidates);
   const first = candidates[0];
   if (first === undefined) return null;
 
@@ -584,9 +596,28 @@ function withAllowedCandidates(asset: Asset, base: string): Asset | null {
     key: asset.key === '' ? assetKeyFromUrl(first) : asset.key,
     candidates,
   };
-  const preview = allowedUrls([asset.preview ?? first], CDN_HOSTS, base)[0];
+  const preview = dedupeAllowed([asset.preview ?? first])[0];
   if (preview !== undefined) out.preview = preview;
   else delete out.preview;
+  return out;
+}
+
+/**
+ * 白名单过滤 + 去重（保持顺序）。
+ *
+ * 入参在这里**一定**是已规范化的绝对 https 地址（toPddImageAsset / buildVideos /
+ * buildSkus 都先过 normalizeUrl），所以不再走 allowedUrls 里的 normalizeUrl ——
+ * 那个函数每次都要 trim、replace 转义斜杠、new URL、再 toString。
+ */
+function dedupeAllowed(raws: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of raws) {
+    if (seen.has(raw)) continue;
+    if (!isAllowedCdnUrl(raw, CDN_HOSTS)) continue;
+    seen.add(raw);
+    out.push(raw);
+  }
   return out;
 }
 
@@ -602,7 +633,7 @@ function buildSkus(goods: unknown, base: string): { assets: Asset[]; skus: Sku[]
 
     let imageKey: string | undefined;
     if (sku.imageUrl !== undefined) {
-      const candidates = allowedUrls(originalImageCandidates(sku.imageUrl, base), CDN_HOSTS, base);
+      const candidates = dedupeAllowed(originalImageCandidates(sku.imageUrl, base));
       const first = candidates[0];
       if (first !== undefined) {
         const existing = keyByUrl.get(first);
@@ -661,12 +692,11 @@ function buildVideos(raws: readonly PddRawVideo[], base: string): Asset[] {
     const picked = selectVideo([candidate]);
     if (!picked) continue;
 
-    const first = allowedUrls([picked.url], CDN_HOSTS, base)[0];
+    const first = dedupeAllowed([picked.url])[0];
     if (first === undefined) continue;
 
     const expiresAt = parseExpiry(first);
-    const cover =
-      picked.cover === undefined ? undefined : allowedUrls([picked.cover], CDN_HOSTS, base)[0];
+    const cover = picked.cover === undefined ? undefined : dedupeAllowed([picked.cover])[0];
     // kernel 的 parseExpiry 没有过期参数时返回 null，toVideoMeta 会过滤掉
     const meta = toVideoMeta(picked, { expiresAt });
     if (cover !== undefined) meta.cover = cover;

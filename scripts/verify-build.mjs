@@ -87,7 +87,14 @@ if (sw) {
   await p.close();
 }
 
-writeFileSync(join(outDir, 'build-verify.json'), JSON.stringify({ result, logs: logs.slice(-60) }, null, 2), 'utf8');
-push('consoleErrors', logs.filter((l) => l.type === 'error').map((l) => l.text.slice(0, 160)));
+writeFileSync(
+  join(outDir, 'build-verify.json'),
+  JSON.stringify({ result, logs: logs.slice(-60) }, null, 2),
+  'utf8',
+);
+push(
+  'consoleErrors',
+  logs.filter((l) => l.type === 'error').map((l) => l.text.slice(0, 160)),
+);
 
 await context.close();

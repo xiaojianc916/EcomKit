@@ -107,19 +107,35 @@ export function deepScanPdd(root: unknown, opts: PddDeepScanOptions): PddDeepSca
     }
 
     if (depth >= MAX_DEPTH) continue;
-    // 逆序压栈 → 出栈时按原顺序遍历，详情图拼接顺序与页面一致
-    const entries: [string, unknown][] = Array.isArray(value)
-      ? value.map((v, i) => [`${path}[${i}]`, v])
-      : Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-          path === '' ? k : `${path}.${k}`,
-          v,
-        ]);
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const entry = entries[i];
-      if (entry === undefined) continue;
-      const [childPath, child] = entry;
-      if (child !== null && typeof child === 'object') {
-        stack.push({ value: child, path: childPath, depth: depth + 1 });
+
+    /**
+     * 逆序压栈 → 出栈时按原顺序遍历，详情图拼接顺序与页面一致。
+     *
+     * 直接倒着遍历源对象，不先 map 出中间的 [path, value] 元组数组：
+     * 原来每个子节点（包括成千上万个字符串/数字叶子）都要构造一个元组 + 拼一次路径字符串；
+     * 一次扫描最多 6 万节点，其中绝大多数是叶子，很快就被 typeof 拦掉。
+     * 只有真正的对象子节点才需要拼路径。
+     */
+    if (Array.isArray(value)) {
+      for (let i = value.length - 1; i >= 0; i--) {
+        const child = value[i];
+        if (child !== null && typeof child === 'object') {
+          stack.push({ value: child, path: `${path}[${i}]`, depth: depth + 1 });
+        }
+      }
+    } else {
+      const rec = value as Record<string, unknown>;
+      const keys = Object.keys(rec);
+      for (let i = keys.length - 1; i >= 0; i--) {
+        const key = keys[i] as string;
+        const child = rec[key];
+        if (child !== null && typeof child === 'object') {
+          stack.push({
+            value: child,
+            path: path === '' ? key : `${path}.${key}`,
+            depth: depth + 1,
+          });
+        }
       }
     }
   }

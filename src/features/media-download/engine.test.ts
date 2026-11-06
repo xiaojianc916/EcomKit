@@ -347,6 +347,79 @@ describe('media-download engine：内容判定（§9.8、§9.9）', () => {
     // 不能留下任何视频文件
     expect((await pathsOf(sink)).filter((f) => /.(ts|m3u8|mp4)$/.test(f))).toHaveLength(0);
   });
+
+  it('视频走流式落盘：内容完整、扩展名按内容判定（§9.9 内存恒定）', async () => {
+    // 一个 256KB 的「视频」：前 32 字节是 ftyp 头，后面是填充。
+    // 用流式分支后这段内容必须逐字节完整落到文件里（旧实现走 blob()，内容也一样，
+    // 但内存占用与文件大小成正比）。
+    const mp4 = new Uint8Array(256 * 1024);
+    mp4.set([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d], 0);
+    for (let i = 12; i < mp4.length; i += 1) mp4[i] = i % 251;
+
+    const { sink, runner } = setupWith(mp4, 'video/mp4');
+    const videoSnap = snapshot({
+      assets: [
+        {
+          key: 'video-1',
+          kind: 'video',
+          index: 0,
+          candidates: ['https://v.example.com/a.mp4'],
+          video: { codec: 'h264', container: 'mp4' },
+        },
+      ],
+    });
+    const payload = buildMediaDownloadPayload({
+      snapshot: videoSnap,
+      selection: { kinds: ['video'] },
+      settings: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+    });
+    await runner.enqueue(
+      createJobRecord({ id: 'j1', type: 'media-download', dedupeKey: 'k', payload }),
+      payload,
+    );
+    await runner.idle();
+
+    const record = runner.get('j1');
+    expect(record?.status).toBe('done');
+    expect(record?.bytes).toBe(mp4.byteLength);
+
+    const files = await pathsOf(sink);
+    const videoFile = files.find((f) => f.endsWith('.mp4'));
+    expect(videoFile, '视频应落成 .mp4').toBeTruthy();
+    // 内容必须逐字节完整（readHead 把嗅探读走的头字节接回去了）；
+    // 落盘大小和记录里的 bytes 都等于源大小
+    const segments = (videoFile as string).split('/');
+    const size = await sink.exists(segments.slice(0, -1), segments.at(-1) as string);
+    expect(size).toBe(mp4.byteLength);
+  });
+
+  it('视频响应体为空时判失败，不落 0 字节文件', async () => {
+    const { sink, runner } = setupWith(new Uint8Array(0), 'video/mp4');
+    const videoSnap = snapshot({
+      assets: [
+        {
+          key: 'video-1',
+          kind: 'video',
+          index: 0,
+          candidates: ['https://v.example.com/a.mp4'],
+          video: { codec: 'h264', container: 'mp4' },
+        },
+      ],
+    });
+    const payload = buildMediaDownloadPayload({
+      snapshot: videoSnap,
+      selection: { kinds: ['video'] },
+      settings: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+    });
+    await runner.enqueue(
+      createJobRecord({ id: 'j1', type: 'media-download', dedupeKey: 'k', payload }),
+      payload,
+    );
+    await runner.idle();
+
+    expect(runner.get('j1')?.status).toBe('failed');
+    expect((await pathsOf(sink)).filter((f) => f.endsWith('.mp4'))).toHaveLength(0);
+  });
 });
 
 describe('media-download engine：取消（§9.11）', () => {

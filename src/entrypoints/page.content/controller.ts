@@ -56,6 +56,14 @@ const log = createLogger('page.controller');
 const ROUTE_DEBOUNCE_MS = 300;
 /** 识别总超时：8 秒还没拿全就按 partial（§7.2 状态机） */
 const PARTIAL_TIMEOUT_MS = 8000;
+/**
+ * 渐进快照的最小间隔。
+ *
+ * 每产出一份 draft 都要把整个累积结果跑一遍 ProductSnapshot.safeParse（Zod），
+ * 而详情图动辄上百张、抓包源会连续产出几十份 draft —— 不节流的话识别期间主线程
+ * 会被 Zod 解析占满，页面滚动都卡。UI 上 120ms 一次的渐进更新肉眼完全够用。
+ */
+const PARTIAL_MIN_INTERVAL_MS = 120;
 
 export interface PageController {
   start(): void;
@@ -108,6 +116,19 @@ export function createPageController(ctx: ContentScriptContext): PageController 
   let formDecided = false;
   let version = 0;
   const listeners = new Set<() => void>();
+  /** 上次算渐进快照的时间（节流用） */
+  let lastPartialAt = 0;
+  /**
+   * 下发给外壳的 `now` 缓存。
+   *
+   * ShellProps.now 只有一个消费者：把手角标判断「完成态对勾还剩多久」（3 秒窗口）。
+   * 其余时间它是一个恒定的值就行 —— 每次 notify 都塞一个新的 Date.now() 会让
+   * 所有依赖 now 的 memo 全部失效（进度 200ms 一条）。
+   */
+  let shellNow = Date.now();
+  /** 按平台缓存的「功能列表 / 清单」，避免每次 notify 都重建数组（§10.9 高频路径） */
+  let cachedFeaturesFor: string | null = null;
+  let cachedFeatures: RegisteredFeature[] = pageFeatures;
   let doneTimer: ReturnType<typeof setTimeout> | null = null;
   let uiPrefs: Record<string, 'hidden' | 'handle' | 'panel'> = {};
   let handleYPrefs: Record<string, number> = {};
@@ -305,11 +326,16 @@ export function createPageController(ctx: ContentScriptContext): PageController 
         partialTimeoutMs: PARTIAL_TIMEOUT_MS,
         onProgress: (_draft: ProductDraft, acc: DraftAccumulator) => {
           if (localAbort.signal.aborted) return;
+          // 节流：抓包源会连着吐几十份 draft，每份都跑一次整包 Zod 解析会占满主线程。
+          // 首次（还没快照）不节流，保证「识别成功」这一刻尽快出现。
+          const nowAt = Date.now();
+          if (snapshot !== null && nowAt - lastPartialAt < PARTIAL_MIN_INTERVAL_MS) return;
+          lastPartialAt = nowAt;
           const partial = acc.toSnapshot({
             platform: hit.platform.id,
             pageKind: hit.kind,
             productId: hit.productId,
-            capturedAt: Date.now(),
+            capturedAt: nowAt,
             fallbackTitle: document.title,
             fallbackUrl: url.toString(),
           });
@@ -460,7 +486,9 @@ export function createPageController(ctx: ContentScriptContext): PageController 
 
   return {
     start() {
-      // 先把站点偏好读回来，再建 store，否则第一次渲染用的是默认形态
+      // 先把 store 建出来（Shell 立刻要用），再异步读回站点偏好。
+      // 旧顺序是先读再建，读回来时 Shell 可能已经挂载并用了默认值 —— 于是"记不住把手位置"。
+      ensureStore();
       void loadPrefs().then(() => {
         const saved = prefs.get<{ form?: 'hidden' | 'handle' | 'panel'; handleY?: number }>(
           siteKeyOf(location.hostname),
@@ -469,7 +497,6 @@ export function createPageController(ctx: ContentScriptContext): PageController 
           ensureStore().getState().setHandleY(saved.handleY);
         }
       });
-      ensureStore();
       void (async () => {
         try {
           const settings = await readSettings();
@@ -481,8 +508,19 @@ export function createPageController(ctx: ContentScriptContext): PageController 
       })();
 
       ctx.addEventListener(window, 'wxt:locationchange', () => scheduleEvaluate());
+      // resize 用 rAF 合并：拖动窗口时浏览器每帧都会派发 resize，
+      // 每次都 setViewport 会让 Shell 每次事件都重渲染一遍（§10.9 高频路径）。
+      let resizeFrame = 0;
       ctx.addEventListener(window, 'resize', () => {
-        ensureStore().getState().setViewport(window.innerWidth, window.innerHeight);
+        if (resizeFrame !== 0) return;
+        resizeFrame = requestAnimationFrame(() => {
+          resizeFrame = 0;
+          ensureStore().getState().setViewport(window.innerWidth, window.innerHeight);
+        });
+      });
+      ctx.addEventListener(window, 'pagehide', () => {
+        if (resizeFrame !== 0) cancelAnimationFrame(resizeFrame);
+        resizeFrame = 0;
       });
 
       disconnectPort = connectJobPort({
@@ -492,8 +530,13 @@ export function createPageController(ctx: ContentScriptContext): PageController 
             notify();
             // 把手的「完成」对勾只保留 3 秒：到点再刷新一次 now
             if (msg.type === 'job-done') {
+              // 完成态窗口内 now 必须真的走动，否则把手上的对勾永远不会在 3 秒后回落
+              shellNow = Date.now();
               if (doneTimer) clearTimeout(doneTimer);
-              doneTimer = setTimeout(() => notify(), HANDLE_DONE_TTL_MS + 50);
+              doneTimer = setTimeout(() => {
+                shellNow = Date.now();
+                notify();
+              }, HANDLE_DONE_TTL_MS + 50);
             }
           } else if (msg.type === 'dir-changed') {
             dir = msg.dir;
@@ -566,9 +609,13 @@ export function createPageController(ctx: ContentScriptContext): PageController 
 
     shellProps(api: PageApi): ShellProps {
       const platformId = match?.platform ?? '';
-      const features: RegisteredFeature[] = platformId
-        ? featuresForPlatform(platformId)
-        : pageFeatures;
+      // 缓存：notify 每次都会调用 shellProps（进度 200ms 一条），
+      // 每次都 featuresForPlatform() 都会新建数组，让 Shell 的 useMemo 全部失效。
+      if (cachedFeaturesFor !== platformId) {
+        cachedFeaturesFor = platformId;
+        cachedFeatures = platformId ? featuresForPlatform(platformId) : pageFeatures;
+      }
+      const features = cachedFeatures;
       const m = manifest ?? PLATFORM_MANIFESTS.find((p) => p.id === platformId);
 
       return {
@@ -584,10 +631,12 @@ export function createPageController(ctx: ContentScriptContext): PageController 
         dir,
         features,
         job,
-        now: Date.now(),
+        now: shellNow,
         totalAssets: snapshot?.assets.length ?? 0,
         needsAttention: dir.status !== 'ready' || blocker !== null,
         onFormChange(form) {
+          // store.setForm 已经按站点写进偏好（含 handleY），这里只同步控制器自己的镜像，
+          // 否则下一次 schedulePrefsFlush 会用旧的 handleYPrefs 把它覆盖回去。
           const key = siteKeyOf(location.hostname);
           uiPrefs = { ...uiPrefs, [key]: form };
         },

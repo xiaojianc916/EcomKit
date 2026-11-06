@@ -1,9 +1,9 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { useCallback } from 'react';
+import { memo, useCallback } from 'react';
 import type { Asset, AssetKind } from '../../../kernel/model/asset';
 import { Checkbox, Progress, Thumb } from '../../../kernel/ui-kit';
 import { KIND_LABELS } from '../primary-action-model';
-import { type AssetRowStateInput, assetRowModel, previewAssets, rowTags } from './asset-row-model';
+import { type AssetRowModel, previewAssets, rowTags } from './asset-row-model';
 
 /**
  * 素材行（§10.3 ④，每行 48px）。
@@ -16,15 +16,25 @@ import { type AssetRowStateInput, assetRowModel, previewAssets, rowTags } from '
  * - 点行内“下载”：只下载这一类，不受复选框影响
  * - 点行的其余区域：展开缩略图网格（同一时间只展开一类）
  * - 键盘：行上 Enter 展开网格、空格切换勾选（§10.5 键盘操作）
+ *
+ * **为什么是 memo 且要自定义比较**：进度每 200ms 推一次，job 对象每次都是新的
+ * （跨 Port 结构克隆），引用比较必然失配。真正决定这一行长什么样的是
+ * assetRowModel 的四个结果字段，所以这里逐个比它们，而不是比 job 的引用 ——
+ * 否则 200ms 一次的四行重渲染就白省了。
  */
-export interface AssetRowProps extends Omit<AssetRowStateInput, 'skippedCount'> {
+export interface AssetRowProps {
+  kind: AssetKind;
+  /** 这一类在快照里的素材（引用稳定，来自 groupAssetsByKind 的缓存） */
   assets: Asset[];
+  /**
+   * 右半部分的状态与文案。由 AssetList 统一用 assetRowModel 算好传进来 ——
+   * 放在这里算的话比较函数拿不到「上一份」结果，memo 就退化成引用比较。
+   */
+  model: AssetRowModel;
   checked: boolean;
   /** 挑选模式下这一行是半选（§10.3 勾选状态显示为半选） */
-  indeterminate?: boolean;
+  indeterminate: boolean;
   expanded: boolean;
-  /** 已存在（跳过）的文件数，用于显示「已存在」（§10.4） */
-  skippedCount?: number;
   onToggleCheck(kind: AssetKind): void;
   onDownloadKind(kind: AssetKind): void;
   onRetryKind(kind: AssetKind): void;
@@ -33,34 +43,63 @@ export interface AssetRowProps extends Omit<AssetRowStateInput, 'skippedCount'> 
 
 export const ROW_HEIGHT = 48;
 
-export function AssetRow(props: AssetRowProps) {
+/** 两行的显示是否等价（不含 job 引用本身，只含它算出来的状态） */
+export function areAssetRowModelsEqual(a: AssetRowModel, b: AssetRowModel): boolean {
+  if (a === b) return true;
+  if (a.countText !== b.countText || a.showDownload !== b.showDownload) return false;
+  if (a.showRetry !== b.showRetry) return false;
+  const sa = a.status;
+  const sb = b.status;
+  if (sa.kind !== sb.kind) return false;
+  switch (sa.kind) {
+    case 'progress':
+      return sa.done === (sb as typeof sa).done && sa.total === (sb as typeof sa).total;
+    case 'partial':
+      return (
+        sa.done === (sb as typeof sa).done &&
+        sa.total === (sb as typeof sa).total &&
+        sa.failed === (sb as typeof sa).failed
+      );
+    case 'done':
+    case 'skipped':
+      return sa.count === (sb as typeof sa).count;
+    default:
+      // resolving / ready / empty 没有负载字段
+      return true;
+  }
+}
+
+/** 素材行的 memo 比较器（导出以便单测直接验证「什么会触发重渲染」） */
+export function areAssetRowPropsEqual(a: AssetRowProps, b: AssetRowProps): boolean {
+  return (
+    a.kind === b.kind &&
+    a.assets === b.assets &&
+    a.checked === b.checked &&
+    a.indeterminate === b.indeterminate &&
+    a.expanded === b.expanded &&
+    a.onToggleCheck === b.onToggleCheck &&
+    a.onDownloadKind === b.onDownloadKind &&
+    a.onRetryKind === b.onRetryKind &&
+    a.onToggleExpand === b.onToggleExpand &&
+    areAssetRowModelsEqual(a.model, b.model)
+  );
+}
+
+export const AssetRow = memo(function AssetRow(props: AssetRowProps) {
   const {
     kind,
     assets,
     checked,
     indeterminate = false,
     expanded,
-    total,
-    selectedCount,
-    resolving,
-    job,
-    skippedCount = 0,
+    model,
     onToggleCheck,
     onDownloadKind,
     onRetryKind,
     onToggleExpand,
   } = props;
 
-  const model = assetRowModel({
-    kind,
-    total,
-    selectedCount,
-    resolving,
-    job,
-    skippedCount,
-  });
-
-  const disabled = total === 0;
+  const disabled = model.status.kind === 'empty';
   const tags = rowTags(assets, kind);
   const { shown, rest } = previewAssets(assets, 4);
   const label = KIND_LABELS[kind];
@@ -207,4 +246,4 @@ export function AssetRow(props: AssetRowProps) {
       ) : null}
     </div>
   );
-}
+}, areAssetRowPropsEqual);

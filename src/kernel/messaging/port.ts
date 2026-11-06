@@ -93,25 +93,55 @@ function ensureSharedPort(): SharedPort {
   let port: chrome.runtime.Port | null = null;
   let disposed = false;
   let retry = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<(msg: PortMessage) => void>();
   const connectListeners = new Set<() => void>();
 
+  /**
+   * 扩展上下文是否还活着。
+   *
+   * 扩展被更新/禁用/卸载后，已经注入的旧内容脚本里的 `chrome.runtime` 会退化：
+   * connect() 抛「Extension context invalidated」，`chrome.runtime.id` 变成 undefined。
+   * 这时继续按 10s 退避重连就是**永远**每 10 秒抛一次异常，直到用户关掉标签页。
+   * 真实场景：用户更新扩展后不刷新商品页（很常见），控制台会持续报错。
+   */
+  const contextAlive = (): boolean =>
+    (chrome.runtime as { id?: string } | undefined)?.id !== undefined;
+
   const scheduleReconnect = (): void => {
-    if (disposed) return;
+    if (disposed || reconnectTimer !== null) return;
+    if (!contextAlive()) {
+      disposed = true;
+      return;
+    }
     const delay = Math.min(1000 * 2 ** retry++, 10_000);
-    setTimeout(connect, delay);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
   };
+
+  /**
+   * 连接代数：每次新建连接 +1。
+   * onDisconnect 回调只对「自己那一代」的连接生效，避免旧 Port 的断连事件把新连接清掉
+   * （bfcache 恢复、手动重连都会出现新旧两条连接短暂并存）。
+   */
+  let generation = 0;
 
   const connect = (): void => {
     if (disposed) return;
+    generation += 1;
+    const gen = generation;
+    let next: chrome.runtime.Port;
     try {
-      port = chrome.runtime.connect({ name: PORT_NAME });
+      next = chrome.runtime.connect({ name: PORT_NAME });
     } catch {
-      // 扩展在更新/卸载时 connect 会抛，退避重试
+      // 扩展在更新/卸载时 connect 会抛，退避重试（上下文已失效时 scheduleReconnect 会直接停）
       scheduleReconnect();
       return;
     }
-    port.onMessage.addListener((msg) => {
+    port = next;
+    next.onMessage.addListener((msg) => {
       for (const cb of [...listeners]) {
         try {
           cb(msg as PortMessage);
@@ -120,7 +150,8 @@ function ensureSharedPort(): SharedPort {
         }
       }
     });
-    port.onDisconnect.addListener(() => {
+    next.onDisconnect.addListener(() => {
+      if (generation !== gen) return; // 已被更新的连接取代
       port = null;
       if (disposed) return;
       scheduleReconnect();
@@ -135,6 +166,26 @@ function ensureSharedPort(): SharedPort {
     }
   };
 
+  /**
+   * bfcache 恢复：页面被存进 back/forward cache 时浏览器会掐断 Port，
+   * 恢复后**不保证**补发 onDisconnect —— port 变量还在、postMessage 也不抛，
+   * 于是这个页面从此收不到任何进度（真实场景：用户从商品 A 点进商品 B 再返回，进度条纹丝不动）。
+   * pageshow.persisted 是官方给的「从 bfcache 恢复」信号，收到就重建连接。
+   */
+  const onPageShow = (event: PageTransitionEvent): void => {
+    if (!event.persisted || disposed) return;
+    const stale = port;
+    port = null;
+    try {
+      stale?.disconnect();
+    } catch {
+      /* 已经断了 */
+    }
+    connect();
+  };
+  const hasWindow = typeof window !== 'undefined';
+  if (hasWindow) window.addEventListener('pageshow', onPageShow);
+
   const entry: SharedPort = {
     listeners,
     connectListeners,
@@ -143,6 +194,11 @@ function ensureSharedPort(): SharedPort {
       listeners.clear();
       connectListeners.clear();
       shared = null;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (hasWindow) window.removeEventListener('pageshow', onPageShow);
       try {
         port?.disconnect();
       } catch {

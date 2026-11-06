@@ -121,6 +121,56 @@ describe('parseM3u8（§9.9 HLS）', () => {
     const text = ['#EXTM3U', '', '#EXT-X-VERSION:3', 'seg0.ts', ''].join('\n');
     expect(parseM3u8(text, 'https://c.com/a.m3u8').segments).toHaveLength(1);
   });
+
+  it('STREAM-INF 缺省 BANDWIDTH 时仍按变体解析（不能当成分片）', () => {
+    const text = [
+      '#EXTM3U',
+      '#EXT-X-STREAM-INF:FRAME-RATE=30.000',
+      'high/index.m3u8',
+      '#EXT-X-STREAM-INF:BANDWIDTH=800000',
+      'mid/index.m3u8',
+    ].join('\n');
+    const playlist = parseM3u8(text, 'https://cdn.example.com/master.m3u8');
+    expect(playlist.segments).toEqual([]);
+    expect(playlist.variants.map((v) => v.uri)).toEqual([
+      'https://cdn.example.com/high/index.m3u8',
+      'https://cdn.example.com/mid/index.m3u8',
+    ]);
+    // 缺省带宽按 0 处理，最高码率仍然选得对
+    expect(pickBestVariant(playlist.variants)?.bandwidth).toBe(800000);
+  });
+
+  it('#EXT-X-MAP 的初始化段排在分片最前面（fMP4 不写 init 就播不了）', () => {
+    const text = [
+      '#EXTM3U',
+      '#EXT-X-MAP:URI="init.mp4"',
+      '#EXTINF:6,',
+      'seg0.m4s',
+      '#EXTINF:6,',
+      'seg1.m4s',
+    ].join('\n');
+    const playlist = parseM3u8(text, 'https://cdn.example.com/media.m3u8');
+    expect(playlist.segments).toEqual([
+      'https://cdn.example.com/init.mp4',
+      'https://cdn.example.com/seg0.m4s',
+      'https://cdn.example.com/seg1.m4s',
+    ]);
+    // 类型注释写明了 #EXT-X-MAP 不算 unsupported
+    expect(playlist.unsupported).toBeUndefined();
+  });
+
+  it('变体和分片混排时不会串行', () => {
+    const text = [
+      '#EXTM3U',
+      '#EXT-X-STREAM-INF:BANDWIDTH=1000',
+      'a.m3u8',
+      '#EXTINF:6,',
+      'seg0.ts',
+    ].join('\n');
+    const playlist = parseM3u8(text, 'https://c.com/x.m3u8');
+    expect(playlist.variants).toHaveLength(1);
+    expect(playlist.segments).toEqual(['https://c.com/seg0.ts']);
+  });
 });
 
 describe('pickBestVariant', () => {

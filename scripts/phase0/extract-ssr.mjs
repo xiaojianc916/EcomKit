@@ -81,15 +81,19 @@ function skeleton(value, depth = 0, maxDepth = 6) {
   if (value === null || value === undefined) return String(value);
   if (Array.isArray(value)) {
     if (value.length === 0) return [];
-    return depth >= maxDepth ? `[array:${value.length}]` : [skeleton(value[0], depth + 1, maxDepth)];
+    return depth >= maxDepth
+      ? `[array:${value.length}]`
+      : [skeleton(value[0], depth + 1, maxDepth)];
   }
   const t = typeof value;
-  if (t === 'string') return value.length > 160 ? `string(${value.length}) ${value.slice(0, 80)}…` : value;
+  if (t === 'string')
+    return value.length > 160 ? `string(${value.length}) ${value.slice(0, 80)}…` : value;
   if (t === 'number' || t === 'boolean') return value;
   if (t !== 'object') return t;
   if (depth >= maxDepth) return 'object';
   const out = {};
-  for (const [k, v] of Object.entries(value).slice(0, 120)) out[k] = skeleton(v, depth + 1, maxDepth);
+  for (const [k, v] of Object.entries(value).slice(0, 120))
+    out[k] = skeleton(v, depth + 1, maxDepth);
   return out;
 }
 

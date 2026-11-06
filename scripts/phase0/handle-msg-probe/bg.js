@@ -1,5 +1,4 @@
-
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'echo-handle') {
     const h = msg.handle;
     sendResponse({
@@ -13,4 +12,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   return false;
 });
-chrome.action.onClicked.addListener(() => chrome.tabs.create({ url: chrome.runtime.getURL('page.html') }));
+chrome.action.onClicked.addListener(() =>
+  chrome.tabs.create({ url: chrome.runtime.getURL('page.html') }),
+);

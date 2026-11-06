@@ -2,7 +2,7 @@ import type { ErrorCode } from '../../kernel/errors/codes';
 import type { Asset } from '../../kernel/model/asset';
 import type { ProductDraft, Sku } from '../../kernel/model/product';
 import { parseExpiry } from '../../kernel/net/expiry';
-import { allowedUrls } from '../shared/cdn';
+import { isAllowedCdnUrl } from '../shared/cdn';
 import { collectDomImages, type DomImageRules } from '../shared/dom-heuristics';
 import { assetKeyFromUrl, extractImageUrls } from '../shared/html-images';
 import { firstNonEmpty, readArray, readString } from '../shared/read-path';
@@ -211,6 +211,8 @@ interface Tagged<T> {
  */
 async function* mergeStreams<T>(streams: AsyncIterable<T>[]): AsyncIterable<T> {
   const queue: T[] = [];
+  /** 已消费到的下标；用游标而不是 queue.shift()，后者每次都要把整个数组前移一位 */
+  let head = 0;
   let waiting: (() => void) | null = null;
   let pending = streams.length;
 
@@ -235,9 +237,15 @@ async function* mergeStreams<T>(streams: AsyncIterable<T>[]): AsyncIterable<T> {
     })();
   }
 
-  while (pending > 0 || queue.length > 0) {
-    const next = queue.shift();
-    if (next !== undefined) {
+  while (pending > 0 || head < queue.length) {
+    if (head < queue.length) {
+      const next = queue[head] as T;
+      head += 1;
+      // 队列被消费光时把数组还回去，避免长连接会话里无限增长
+      if (head >= 64 && head * 2 >= queue.length) {
+        queue.splice(0, head);
+        head = 0;
+      }
       yield next;
       continue;
     }
@@ -364,7 +372,7 @@ export function draftFromPayload(
   assets.push(...buildVideos(root, base));
 
   const safeAssets = assets
-    .map((asset) => withAllowedCandidates(asset, base))
+    .map((asset) => withAllowedCandidates(asset))
     .filter((asset): asset is Asset => asset !== null);
 
   if (safeAssets.length > 0) draft.assets = safeAssets;
@@ -409,7 +417,7 @@ function buildSkus(root: unknown, base: string): { assets: Asset[]; skus: Sku[] 
 
     let imageKey: string | undefined;
     if (sku.imageUrl !== undefined) {
-      const candidates = allowedUrls(originalImageCandidates(sku.imageUrl, base), CDN_HOSTS, base);
+      const candidates = dedupeAllowed(originalImageCandidates(sku.imageUrl, base));
       const first = candidates[0];
       if (first !== undefined) {
         const existing = keyByUrl.get(first);
@@ -460,15 +468,14 @@ function buildVideos(root: unknown, base: string): Asset[] {
   const out: Asset[] = [];
   for (const raw of raws) {
     const candidates = toVideoCandidates(raw, base)
-      .map((c) => ({ ...c, url: allowedUrls([c.url], CDN_HOSTS, base)[0] }))
+      .map((c) => ({ ...c, url: dedupeAllowed([c.url])[0] }))
       .filter((c): c is typeof c & { url: string } => c.url !== undefined);
 
     const picked = selectVideo(candidates);
     if (!picked) continue;
 
     const expiresAt = parseExpiry(picked.url);
-    const cover =
-      picked.cover === undefined ? undefined : allowedUrls([picked.cover], CDN_HOSTS, base)[0];
+    const cover = picked.cover === undefined ? undefined : dedupeAllowed([picked.cover])[0];
     // kernel 的 parseExpiry 没有过期参数时返回 null，toVideoMeta 会过滤掉
     const meta = toVideoMeta(picked, { expiresAt });
     if (cover !== undefined) meta.cover = cover;
@@ -486,8 +493,14 @@ function buildVideos(root: unknown, base: string): Asset[] {
   return out;
 }
 
-function withAllowedCandidates(asset: Asset, base: string): Asset | null {
-  const candidates = allowedUrls(asset.candidates, CDN_HOSTS, base);
+/**
+ * 候选地址过 CDN 白名单；缩略图也必须是白名单内的地址。
+ *
+ * 入参到这里时已由 normalizeUrl 规范化过（各 to*Asset / buildVideos 都走它），
+ * 再让 allowedUrls 跑一遍 normalizeUrl 是纯重复解析（单条候选的视频行尤其明显）。
+ */
+function withAllowedCandidates(asset: Asset): Asset | null {
+  const candidates = dedupeAllowed(asset.candidates);
   const first = candidates[0];
   if (first === undefined) return null;
 
@@ -496,9 +509,22 @@ function withAllowedCandidates(asset: Asset, base: string): Asset | null {
     key: asset.key === '' ? assetKeyFromUrl(first) : asset.key,
     candidates,
   };
-  const preview = allowedUrls([asset.preview ?? first], CDN_HOSTS, base)[0];
+  const preview = dedupeAllowed([asset.preview ?? first])[0];
   if (preview !== undefined) out.preview = preview;
   else delete out.preview;
+  return out;
+}
+
+/** 白名单过滤 + 去重（保持顺序）；入参必是已规范化的绝对 https 地址 */
+function dedupeAllowed(raws: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of raws) {
+    if (seen.has(raw)) continue;
+    if (!isAllowedCdnUrl(raw, CDN_HOSTS)) continue;
+    seen.add(raw);
+    out.push(raw);
+  }
   return out;
 }
 

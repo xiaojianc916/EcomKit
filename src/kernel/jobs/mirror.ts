@@ -25,6 +25,24 @@ export function buildMirror(jobs: readonly JobRecord[], now = Date.now()): JobMi
   return { v: MIRROR_VERSION, at: now, jobs: [...jobs] };
 }
 
+/**
+ * 落盘前瘦身：**payload 不进镜像**。
+ *
+ * payload 是整份商品快照（标题 + 几十上百个素材 URL + candidates + SKU 列表，
+ * 一个商品几十 KB 到几百 KB），而 chrome.storage.session 的配额只有 10MB ——
+ * 几个商品并行下载就能写爆，写爆之后 write() 只能静默失败，
+ * 症状正是「浏览器重开后任务列表全空、正在下的任务全丢」，也就是镜像要防的那件事。
+ * 恢复出来的记录只用于「显示 + 让用户点继续下载」，payload 由页面重新提交时带上。
+ */
+function slimForStorage(jobs: readonly JobRecord[]): JobRecord[] {
+  const out: JobRecord[] = new Array(jobs.length);
+  for (let i = 0; i < jobs.length; i += 1) {
+    const job = jobs[i] as JobRecord;
+    out[i] = job.payload == null ? job : { ...job, payload: null };
+  }
+  return out;
+}
+
 /** 解析镜像；结构不对时返回空数组（宁可丢镜像，也不要让 SW 启动崩掉） */
 export function parseMirror(raw: unknown): JobRecord[] {
   if (!raw || typeof raw !== 'object') return [];
@@ -33,7 +51,14 @@ export function parseMirror(raw: unknown): JobRecord[] {
   return mirror.jobs.filter(isJobRecordLike);
 }
 
-/** 宽松校验：只要关键字段类型对就认，避免版本升级时把旧镜像全丢掉 */
+/**
+ * 宽松校验：只要关键字段类型对就认，避免版本升级时把旧镜像全丢掉。
+ *
+ * 但「关键字段」要跟**真正读它们的地方**对齐：旧版只验到 total/done/failed，
+ * 而面板渲染一行时会直接读 byGroup[kind]、skipped、bytes（asset-row-model.ts、page.tsx）。
+ * 缺这些字段的记录漏进来，渲染那一行就是 TypeError —— 整个面板白屏，
+ * 比丢一条镜像严重得多。所以补验这三项；旧镜像里确实没有的，就只有这一条被丢掉。
+ */
 export function isJobRecordLike(value: unknown): value is JobRecord {
   if (!value || typeof value !== 'object') return false;
   const job = value as Partial<JobRecord>;
@@ -44,7 +69,11 @@ export function isJobRecordLike(value: unknown): value is JobRecord {
     typeof job.dedupeKey === 'string' &&
     typeof job.total === 'number' &&
     typeof job.done === 'number' &&
-    Array.isArray(job.failed)
+    typeof job.skipped === 'number' &&
+    typeof job.bytes === 'number' &&
+    Array.isArray(job.failed) &&
+    job.byGroup !== null &&
+    typeof job.byGroup === 'object'
   );
 }
 
@@ -110,7 +139,7 @@ export function createMirrorStore(options: { area?: SessionArea; key?: string } 
     },
     async write(jobs) {
       try {
-        await getArea().set({ [key]: buildMirror(jobs) });
+        await getArea().set({ [key]: buildMirror(slimForStorage(jobs)) });
       } catch {
         // 写镜像失败不影响任务本身，下一轮还会再写
       }
@@ -125,7 +154,16 @@ export function createMirrorStore(options: { area?: SessionArea; key?: string } 
     async recover(offscreenAlive) {
       const jobs = await this.read();
       const fixed = markInterrupted(jobs, offscreenAlive);
-      if (!offscreenAlive) await this.write(fixed.filter((j) => j.status !== 'interrupted'));
+      /**
+       * 只有真的标出了 interrupted 才写回，而且写回的必须是**完整列表**。
+       *
+       * 旧实现是「offscreen 不在就写，且写回 filter 掉 interrupted 的列表」——
+       * 恰好把刚标成 interrupted 的那几条从镜像里删掉。于是「浏览器重启 →
+       * 面板重新挂载」时中断的任务一条都不剩，用户永远看不到「下载中断 · 继续」，
+       * 已经下了一半的文件也被当成没下过。interrupted 正是这里要保留的状态。
+       */
+      const changed = fixed.some((job, i) => job !== jobs[i]);
+      if (changed) await this.write(fixed);
       return fixed;
     },
   };

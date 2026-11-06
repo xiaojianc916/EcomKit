@@ -1,13 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useStore } from 'zustand';
 import type { ErrorCode } from '../../kernel/errors/codes';
 import type { JobRecord } from '../../kernel/jobs/types';
 import type { HistoryState } from '../../kernel/messaging/protocol';
 import type { AssetKind } from '../../kernel/model/asset';
 import type { ProductSnapshot } from '../../kernel/model/product';
 import type { PageApi, PageFeature, PanelProps, QuickAction } from '../types';
-import { createMediaStore, isSelectionStale, type MediaStore } from './media-store';
+import {
+  createMediaStore,
+  isSelectionStale,
+  type MediaStore,
+  type MediaStoreState,
+} from './media-store';
 import { buildMediaDownloadPayload, platformDisplayName, toPlannerSettings } from './payload';
-import { planDownload } from './planner';
+import { planCounts, planDownload, type WritePlan } from './planner';
 import {
   joinKindLabels,
   KIND_ORDER,
@@ -65,6 +71,31 @@ export function skuLabelMap(snapshot: ProductSnapshot): Map<string, string> {
   return map;
 }
 
+/**
+ * store 切片的选择器提到模块级：每次渲染都传一个新箭头函数虽然也能工作，
+ * 但稳定引用能让 zustand 的 useStore 走最省的那条路。
+ */
+const selectCheckedKinds = (s: MediaStoreState): Set<AssetKind> => s.checkedKinds;
+const selectSelectedKeys = (s: MediaStoreState): Set<string> => s.selectedKeys;
+const selectExpandedKind = (s: MediaStoreState): AssetKind | null => s.expandedKind;
+const selectJob = (s: MediaStoreState): JobRecord | null => s.job;
+const selectHistory = (s: MediaStoreState): HistoryState | null => s.history;
+const selectFailuresOpen = (s: MediaStoreState): boolean => s.failuresOpen;
+
+/**
+ * 当天 0 点的时间戳（本地时区）。
+ *
+ * planner 的 \`{date}\` 变量只精确到天，但计划里还带着 \`now\`。完成态那 3 秒里
+ * \`now\` 每 250ms 变一次，直接把它当依赖会让整份计划（含几百条 WorkItem）
+ * 每 250ms 重算一遍。换成「天」这个量级后，同一天内这个数字不变，
+ * useMemo 的依赖比较（Object.is）就稳住了。
+ */
+function localDayStart(timestamp: number): number {
+  const date = new Date(timestamp);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
 export function MediaDownloadPanel({
   snapshot,
   status,
@@ -84,8 +115,24 @@ export function MediaDownloadPanel({
     });
   }
   const store = mediaStoreRef.current;
-  // 用 useState 保证引用稳定；store 每次渲染都从 ref 取
-  const sync = useSyncStore(store);
+
+  /**
+   * 按切片订阅（React 19 的 useSyncExternalStore，zustand 的 useStore 就是它的封装）。
+   *
+   * §10.9 要求「进度每 200ms 更新一次时，只有对应的行和主按钮会重新渲染」。
+   * 旧实现是 \`store.subscribe((state) => setSnapshotState(state))\` —— 订阅的是**整棵** store，
+   * 每次 set()（包括每 200ms 的进度）都换一个新快照，整块面板（含展开后 200 多格的缩略图网格）
+   * 全部重渲染。改成逐切片订阅后，每个切片只在它自己的引用变化时才触发重渲染。
+   *
+   * 用 Set/对象本身作为切片是安全的：media-store 的 action 每次都新建 Set 后才 set，
+   * 没变时引用保持不变，所以不会出现「每次渲染都当成变了」的空转。
+   */
+  const checkedKinds = useStore(store, selectCheckedKinds);
+  const selectedKeys = useStore(store, selectSelectedKeys);
+  const expandedKind = useStore(store, selectExpandedKind);
+  const job = useStore(store, selectJob);
+  const history = useStore(store, selectHistory);
+  const failuresOpen = useStore(store, selectFailuresOpen);
 
   const [now, setNow] = useState(() => Date.now());
   /** 提交过程中的状态：让主按钮在等待 bg 回话时也给出可见反馈 */
@@ -101,6 +148,54 @@ export function MediaDownloadPanel({
   const [grantPending, setGrantPending] = useState(false);
 
   const byKind = useMemo(() => groupAssetsByKind(snapshot.assets), [snapshot.assets]);
+  // 这两个换算以前在 counts / history / folderPreview 里各做一次，现在只做一次
+  const plannerSettings = useMemo(() => toPlannerSettings(settings), [settings]);
+  const platformName = useMemo(() => platformDisplayName(snapshot.platform), [snapshot.platform]);
+  const planDay = localDayStart(now);
+
+  /**
+   * 「按类别全下」的计划：主按钮数量、保存路径预览、历史查询三处共用一份。
+   *
+   * 旧实现调了 3 次 planDownload（counts / history / folderPreview），每次都把整份计划
+   * （几百条 WorkItem，含文件名清洗、模板渲染、字素截断）从头算一遍 —— 而这三份结果
+   * 除了挑选模式下的 counts 之外完全一样。合并成一次 useMemo 后，只在快照 / 勾选 /
+   * 设置 / 日期真正变化时才算。
+   *
+   * 计划算不出来（模板缺 {id} 等）时返回 null，由调用方各自退回原行为。
+   */
+  const planForKinds = useMemo<WritePlan | null>(() => {
+    try {
+      return planDownload({
+        snapshot,
+        selection: { kinds: [...checkedKinds] },
+        settings: plannerSettings,
+        platformDisplayName: platformName,
+        now: planDay,
+      });
+    } catch {
+      return null;
+    }
+  }, [snapshot, checkedKinds, plannerSettings, platformName, planDay]);
+
+  /**
+   * 挑选模式下的计划：只下选中的 key。没进入挑选模式时不给 planDownload 机会
+   * （返回 null 表示「不在挑选模式」，而不是「计算出错」）。
+   */
+  const planForPicked = useMemo<WritePlan | null>(() => {
+    if (selectedKeys.size === 0) return null;
+    try {
+      return planDownload({
+        snapshot,
+        selection: { kinds: [...checkedKinds], keys: [...selectedKeys] },
+        settings: plannerSettings,
+        platformDisplayName: platformName,
+        now: planDay,
+      });
+    } catch {
+      return null;
+    }
+  }, [snapshot, checkedKinds, selectedKeys, plannerSettings, platformName, planDay]);
+
   /**
    * 每类**真正会被写入**的数量（不是快照里的素材数）。
    *
@@ -109,38 +204,13 @@ export function MediaDownloadPanel({
    * 旧实现直接用快照总数，用户点了「下载 24 个」结果只下来 22 个。
    */
   const counts = useMemo(() => {
-    const sizes = new Set([...sync.checkedKinds]);
-    try {
-      const plan = planDownload({
-        snapshot,
-        selection: {
-          kinds: [...sizes],
-          ...(sync.selectedKeys.size > 0 ? { keys: [...sync.selectedKeys] } : {}),
-        },
-        settings: toPlannerSettings(settings),
-        platformDisplayName: platformDisplayName(snapshot.platform),
-      });
-      const out: Record<AssetKind, number> = { main: 0, sku: 0, detail: 0, video: 0 };
-      for (const item of plan.items) {
-        if (
-          item.group === 'main' ||
-          item.group === 'sku' ||
-          item.group === 'detail' ||
-          item.group === 'video'
-        ) {
-          out[item.group] += 1;
-        }
-      }
-      return out;
-    } catch {
-      // 模板非法等情况下退回原始计数，至少数量不会突然变成 0
-      return countByKind(snapshot);
-    }
-  }, [snapshot, sync.checkedKinds, sync.selectedKeys, settings]);
-  const allChecked = useMemo(
-    () => isAllChecked(byKind, sync.checkedKinds),
-    [byKind, sync.checkedKinds],
-  );
+    const plan = planForPicked ?? planForKinds;
+    // 模板非法等情况下退回原始计数，至少数量不会突然变成 0
+    if (plan === null) return countByKind(snapshot);
+    return planCounts(plan);
+  }, [planForPicked, planForKinds, snapshot]);
+
+  const allChecked = useMemo(() => isAllChecked(byKind, checkedKinds), [byKind, checkedKinds]);
   const skuLabels = useMemo(() => skuLabelMap(snapshot), [snapshot]);
 
   // 换商品后之前选中的 key 可能一个都不在了，此时退出挑选模式
@@ -149,14 +219,13 @@ export function MediaDownloadPanel({
     [snapshot.assets],
   );
   useEffect(() => {
-    if (isSelectionStale(sync.selectedKeys, availableKeys)) store.getState().clearSelection();
-  }, [availableKeys, sync.selectedKeys, store]);
+    if (isSelectionStale(selectedKeys, availableKeys)) store.getState().clearSelection();
+  }, [availableKeys, selectedKeys, store]);
 
   // 完成态要显示 3 秒再回落（§10.4），这期间需要一个会走的 now。
   // 只在任务已经结束、且在 3 秒窗口内才开定时器 —— 平时不空转，页面里也少一个定时器。
   const needsTick =
-    sync.job !== null &&
-    (sync.job.status === 'done' || sync.job.status === 'partial' || sync.job.status === 'failed');
+    job !== null && (job.status === 'done' || job.status === 'partial' || job.status === 'failed');
   useEffect(() => {
     if (!needsTick) return;
     const timer = setInterval(() => setNow(Date.now()), 250);
@@ -179,7 +248,7 @@ export function MediaDownloadPanel({
   // 历史记录（§9.11）：目录不是 ready 时不读，避免触发授权。
   // 带上 platform 和当前快照的 itemKey：引擎要靠它们算出「上次下过哪些、还缺几个」。
   useEffect(() => {
-    if (dir.status !== 'ready') {
+    if (dir.status !== 'ready' || planForKinds === null) {
       store.getState().setHistory(null);
       return;
     }
@@ -191,16 +260,10 @@ export function MediaDownloadPanel({
          * detailMinWidth 过滤掉的、去重掉的素材根本不会被下载，
          * 拿它们当期望会让「补全 N 个文件」永远清不掉。
          */
-        const planned = planDownload({
-          snapshot,
-          selection: { kinds: [...sync.checkedKinds] },
-          settings: toPlannerSettings(settings),
-          platformDisplayName: platformDisplayName(snapshot.platform),
-        });
         const raw = await api.call('history.get', {
           platform: snapshot.platform,
           productId: snapshot.productId,
-          itemKeys: planned.items.map((item) => item.itemKey),
+          itemKeys: planForKinds.items.map((item) => item.itemKey),
         });
         if (alive) store.getState().setHistory((raw as HistoryState | null) ?? null);
       } catch {
@@ -211,17 +274,7 @@ export function MediaDownloadPanel({
     return () => {
       alive = false;
     };
-  }, [
-    api,
-    dir.status,
-    snapshot.platform,
-    snapshot.productId,
-    snapshot.assets,
-    store,
-    sync.checkedKinds,
-    snapshot,
-    settings,
-  ]);
+  }, [api, dir.status, snapshot.platform, snapshot.productId, planForKinds, store]);
 
   // 目录一旦可用（授权完成 / 用户换好目录），就不再算「等授权」
   useEffect(() => {
@@ -235,18 +288,16 @@ export function MediaDownloadPanel({
     status: status === 'resolving' ? 'resolving' : 'ready',
     dir: dir.status,
     counts,
-    selectedKinds: [...sync.checkedKinds],
-    selectedKeys: [...sync.selectedKeys],
-    job: sync.job,
+    selectedKinds: [...checkedKinds],
+    selectedKeys: [...selectedKeys],
+    job,
     // 其他标签页 / 排队 / 等授权小窗这三个状态目前没有数据源：
     // 保持 null / 0 / false 是**如实**的，不是遗忘 —— 主按钮就不会显示根本没有的状态。
     // 需要它们时必须先有「跨标签页任务查询」和「授权小窗的 pending 回执」，见 docs/audit-c §C3。
     otherTabJob: null,
     queuedAhead: 0,
     history:
-      sync.history === null
-        ? null
-        : { lastAt: sync.history.lastAt, missingCount: sync.history.missing.length },
+      history === null ? null : { lastAt: history.lastAt, missingCount: history.missing.length },
     grantPending,
     now,
   };
@@ -319,13 +370,13 @@ export function MediaDownloadPanel({
         if (res === undefined || res === null) {
           setSubmitError('这些失败项已经不在队列里了，可以重新下载全部');
           api.toast('失败项已失效，可重新下载全部', {
-            action: { label: '重新下载', run: () => submit([...sync.checkedKinds]) },
+            action: { label: '重新下载', run: () => submit([...checkedKinds]) },
           });
         }
       } catch {
         setSubmitError('重试失败，请重新下载全部');
         api.toast('重试失败，请重新下载全部', {
-          action: { label: '重新下载', run: () => submit([...sync.checkedKinds]) },
+          action: { label: '重新下载', run: () => submit([...checkedKinds]) },
         });
       }
     })();
@@ -335,34 +386,31 @@ export function MediaDownloadPanel({
     switch (action.kind) {
       case 'submit':
         // 挑选模式只下选中的单张；否则下勾选的类别（§10.4 第 2–4 行）
-        submit(
-          [...sync.checkedKinds],
-          sync.selectedKeys.size > 0 ? [...sync.selectedKeys] : undefined,
-        );
+        submit([...checkedKinds], selectedKeys.size > 0 ? [...selectedKeys] : undefined);
         return;
       case 'resume':
         // 取消 / 中断后「继续下载」：不是重试失败项，而是**重新提交**同一份选择。
         // .ecbox.json 会让已完成的文件走「已存在」跳过，所以等于续传（§9.11）。
         // 旧实现把 resume 接到了 retryJob 上，没有失败项时 runner 直接返回 null ——
         // 按钮点了什么都不发生。
-        submit([...sync.checkedKinds]);
+        submit([...checkedKinds]);
         return;
       case 'retry-failed':
-        if (sync.job === null) {
-          submit([...sync.checkedKinds]);
+        if (job === null) {
+          submit([...checkedKinds]);
           return;
         }
-        void retryFailed(sync.job.id);
+        void retryFailed(job.id);
         return;
       case 'verify':
         // 「已全部下载」点一下做一次增量检查（§10.4 表下注）
-        submit([...sync.checkedKinds]);
+        submit([...checkedKinds]);
         return;
       case 'open-grant':
         openGrant();
         return;
       case 'cancel':
-        if (sync.job !== null) void api.cancelJob(sync.job.id);
+        if (job !== null) void api.cancelJob(job.id);
         return;
       case 'show-failures':
         store.getState().setFailuresOpen(true);
@@ -374,24 +422,13 @@ export function MediaDownloadPanel({
   };
 
   const folderPreview = useMemo(() => {
-    try {
-      const plan = planDownload({
-        snapshot,
-        selection: { kinds: [...sync.checkedKinds] },
-        settings: toPlannerSettings(settings),
-        platformDisplayName: platformDisplayName(snapshot.platform),
-        now,
-      });
-      return previewFolderPath(plan);
-    } catch {
-      // 模板缺少 {id} 这类错误应该在设置页拦掉；这里退回只显示平台目录
-      return platformDisplayName(snapshot.platform);
-    }
-  }, [snapshot, sync.checkedKinds, settings, now]);
+    // 模板缺少 {id} 这类错误应该在设置页拦掉；这里退回只显示平台目录
+    if (planForKinds === null) return platformName;
+    return previewFolderPath(planForKinds);
+  }, [planForKinds, platformName]);
 
   // 每一类里「已存在、这次跳过」的数量（§10.4 素材行的「✓ N · 已存在」）
   const skippedByKind = useMemo(() => {
-    const job = sync.job;
     const out: Partial<Record<AssetKind, number>> = {};
     if (job === null) return out;
     for (const kind of KIND_ORDER) {
@@ -399,38 +436,73 @@ export function MediaDownloadPanel({
       if (group !== undefined && group.skipped > 0) out[kind] = group.skipped;
     }
     return out;
-  }, [sync.job]);
+  }, [job]);
 
-  const nonEmptyKinds = KIND_ORDER.filter((k) => counts[k] > 0);
+  const nonEmptyKinds = useMemo(() => KIND_ORDER.filter((k) => counts[k] > 0), [counts]);
+
+  /**
+   * 传给素材清单的回调全部 useCallback 固定引用：
+   * 缩略图网格是 React.memo 的，回调不稳定会让它每次进度 tick 都白重渲染一遍
+   * （200 多格 DOM + 200 多个 <img>，那才是 200ms 卡顿的真正来源）。
+   * 这里一律走 store.getState()，不依赖闭包里的状态快照。
+   */
+  const onToggleCheck = useCallback(
+    (kind: AssetKind) => {
+      store.getState().toggleKind(kind);
+    },
+    [store],
+  );
+  const onToggleAll = useCallback(() => {
+    store.getState().toggleAll(nonEmptyKinds);
+  }, [store, nonEmptyKinds]);
+  const onExpand = useCallback(
+    (kind: AssetKind) => {
+      store.getState().expand(kind);
+    },
+    [store],
+  );
+  const onToggleKey = useCallback(
+    (kind: AssetKind, key: string) => {
+      store.getState().toggleKey(kind, key);
+    },
+    [store],
+  );
+  const onSelectAllIn = useCallback(
+    (kind: AssetKind) => {
+      store.getState().selectAllIn(
+        kind,
+        (byKind[kind] ?? []).map((a) => a.key),
+      );
+    },
+    [store, byKind],
+  );
+  const onClearIn = useCallback(() => {
+    store.getState().clearSelection();
+  }, [store]);
 
   return (
     <div>
       <AssetList
         byKind={byKind}
         skippedByKind={skippedByKind}
-        checkedKinds={sync.checkedKinds}
-        selectedKeys={sync.selectedKeys}
-        expandedKind={sync.expandedKind}
+        checkedKinds={checkedKinds}
+        selectedKeys={selectedKeys}
+        expandedKind={expandedKind}
         resolving={status === 'resolving'}
-        job={sync.job}
+        job={job}
         skuLabels={skuLabels}
-        onToggleCheck={(kind) => store.getState().toggleKind(kind)}
-        onToggleAll={() => store.getState().toggleAll(nonEmptyKinds)}
+        onToggleCheck={onToggleCheck}
+        onToggleAll={onToggleAll}
         allChecked={allChecked}
         onDownloadKind={(kind) => submit([kind])}
         onRetryKind={() => {
-          if (sync.job === null) return;
-          void retryFailed(sync.job.id);
+          if (job === null) return;
+          void retryFailed(job.id);
         }}
-        onExpand={(kind) => store.getState().expand(kind)}
-        onToggleKey={(kind, key) => store.getState().toggleKey(kind, key)}
-        onSelectAllIn={(kind) =>
-          store.getState().selectAllIn(
-            kind,
-            (byKind[kind] ?? []).map((a) => a.key),
-          )
-        }
-        onClearIn={() => store.getState().clearSelection()}
+        onExpand={onExpand}
+        onToggleKey={onToggleKey}
+        onSelectAllIn={onSelectAllIn}
+        onClearIn={onClearIn}
       />
 
       <SaveBar
@@ -446,12 +518,12 @@ export function MediaDownloadPanel({
         onAction={runAction}
         submitting={submitting}
         errorText={submitError}
-        {...(sync.job === null ? {} : { bytes: sync.job.bytes })}
+        {...(job === null ? {} : { bytes: job.bytes })}
       />
 
-      {sync.failuresOpen && sync.job !== null && sync.job.failed.length > 0 ? (
+      {failuresOpen && job !== null && job.failed.length > 0 ? (
         <FailureList
-          items={sync.job.failed.map((f: { itemKey: string; code: ErrorCode }) => ({
+          items={job.failed.map((f: { itemKey: string; code: ErrorCode }) => ({
             itemKey: f.itemKey,
             code: f.code,
           }))}
@@ -462,30 +534,18 @@ export function MediaDownloadPanel({
              * FailureList 的单项按钮改成「重试失败项」，点哪一个都是重跑这一批。
              * 真要做逐项重试，得先给 JobTypeDef 加一个「按 itemKey 过滤计划」的入口。
              */
-            if (sync.job === null) return;
-            retryFailed(sync.job.id);
+            if (job === null) return;
+            retryFailed(job.id);
           }}
           onRetryAll={() => {
-            if (sync.job === null) return;
-            retryFailed(sync.job.id);
+            if (job === null) return;
+            retryFailed(job.id);
           }}
           onClose={() => store.getState().setFailuresOpen(false)}
         />
       ) : null}
     </div>
   );
-}
-
-/**
- * 订阅功能私有 store 的几个切片。
- *
- * 为什么不用整棵 store 订阅：§10.9 要求「进度每 200ms 更新一次时，只有对应的行和
- * 主按钮会重新渲染」。zustand 的 useStore + 选择器就是干这个的。
- */
-function useSyncStore(store: MediaStore) {
-  const [snapshotState, setSnapshotState] = useState(() => store.getState());
-  useEffect(() => store.subscribe((state) => setSnapshotState(state)), [store]);
-  return snapshotState;
 }
 
 /** 把手角标（§8.5 handleBadge 插槽）：可下载的素材总数 */
@@ -499,7 +559,9 @@ export function mediaBadge(snap: ProductSnapshot): number {
  */
 export function mediaQuickActions(snap: ProductSnapshot): QuickAction[] {
   const kinds: AssetKind[] = ['main', 'sku', 'detail', 'video'];
-  const countOf = (kind: AssetKind): number => snap.assets.filter((a) => a.kind === kind).length;
+  // 一次遍历替代四次 filter：popup 打开时对每个商品都要算一遍
+  const counts = countByKind(snap);
+  const countOf = (kind: AssetKind): number => counts[kind];
 
   // 快捷入口拿不到功能设置，用默认值构造**完整**载荷：同样过一遍共享 schema，
   // 字段不会漏（旧实现就是在这里漏掉了引擎必需的字段）。
@@ -580,7 +642,7 @@ export function MediaDownloadSettingsSection({
           }}
         />
         {/* 模板必须含 {id}（ADR-6），缺少时立刻报错，不要让用户存下一个定位不到的模板 */}
-        {/\{id(?::\d+)?\}/.test(value.folderTemplate) ? null : (
+        {/{id(?::d+)?}/.test(value.folderTemplate) ? null : (
           <span style={{ color: 'var(--ec-danger)', fontSize: 12 }}>模板必须包含 {'{id}'}</span>
         )}
       </label>

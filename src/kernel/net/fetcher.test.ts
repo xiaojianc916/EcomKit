@@ -253,6 +253,116 @@ describe('createFetcher（§9.7）', () => {
   });
 });
 
+describe('候选切换（§9.7：一个地址不行就换下一个）', () => {
+  it('403 换下一个候选（原图域名被拒，备用域名能成功）', async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (calls.length === 1) return new Response('', { status: 403 });
+      return jpegResponse();
+    });
+    const fetcher = createFetcher({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      maxRetries: 0,
+    });
+    const response = await fetcher.fetchWithFallback(
+      ['https://cdn-a.example.com/a.jpg', 'https://cdn-b.example.com/a.jpg'],
+      { signal: signal(), kind: 'image' },
+    );
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('5xx 换下一个候选', async () => {
+    let call = 0;
+    const fetchImpl = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return new Response('', { status: 503 });
+      return jpegResponse();
+    });
+    const fetcher = createFetcher({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      maxRetries: 0,
+    });
+    const response = await fetcher.fetchWithFallback(
+      ['https://cdn-a.example.com/a.jpg', 'https://cdn-b.example.com/a.jpg'],
+      { signal: signal(), kind: 'image' },
+    );
+    expect(response.status).toBe(200);
+    expect(call).toBe(2);
+  });
+
+  it('网络错误不逐个候选再试（断网时不能把每张图都拖成十几秒）', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('failed to fetch');
+    });
+    const fetcher = createFetcher({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      maxRetries: 0,
+    });
+    await expect(
+      fetcher.fetchWithFallback(
+        ['https://cdn-a.example.com/a.jpg', 'https://cdn-b.example.com/a.jpg'],
+        { signal: signal(), kind: 'image' },
+      ),
+    ).rejects.toMatchObject({ code: 'NETWORK' });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('全部候选都失败时抛最后一个错误', async () => {
+    let call = 0;
+    const fetchImpl = vi.fn(async () => {
+      call += 1;
+      return call === 1 ? new Response('', { status: 503 }) : new Response('', { status: 403 });
+    });
+    const fetcher = createFetcher({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      maxRetries: 0,
+    });
+    await expect(
+      fetcher.fetchWithFallback(
+        ['https://cdn-a.example.com/a.jpg', 'https://cdn-b.example.com/a.jpg'],
+        { signal: signal(), kind: 'image' },
+      ),
+    ).rejects.toMatchObject({ code: 'HTTP_403' });
+  });
+});
+
+describe('重建响应不丢元信息', () => {
+  it('url / redirected / type 跟着原响应走（跟过 302 之后的地址要能进日志）', async () => {
+    const fetchImpl = vi.fn(async () => {
+      const res = jpegResponse();
+      Object.defineProperty(res, 'url', { value: 'https://cdn.example.com/final.jpg' });
+      Object.defineProperty(res, 'redirected', { value: true });
+      return res;
+    });
+    const fetcher = createFetcher({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const response = await fetcher.fetchWithFallback(['https://cdn.example.com/a.jpg'], {
+      signal: signal(),
+      kind: 'image',
+    });
+    expect(response.url).toBe('https://cdn.example.com/final.jpg');
+    expect(response.redirected).toBe(true);
+  });
+
+  it('headers 原样保留', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...new Uint8Array(60)]), {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg', 'content-length': '64' },
+        }),
+    );
+    const fetcher = createFetcher({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const response = await fetcher.fetchWithFallback(['https://cdn.example.com/a.jpg'], {
+      signal: signal(),
+      kind: 'image',
+    });
+    expect(response.headers.get('content-type')).toBe('image/jpeg');
+    expect(response.headers.get('content-length')).toBe('64');
+  });
+});
+
 describe('stripQuery（§6.7 日志不带签名参数）', () => {
   it('去掉查询串', () => {
     expect(stripQuery('https://cdn.example.com/a.mp4?sign=secret&expires=1')).toBe(

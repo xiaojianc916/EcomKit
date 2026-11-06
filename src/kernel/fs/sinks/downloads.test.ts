@@ -134,6 +134,61 @@ describe('createDownloadsSink（§9.13）', () => {
     expect(await sink.exists(['拼多多'], 'a.broken.json')).not.toBeNull();
   });
 
+  it('带 sourceUrl 的流直接走直链，不在本地把几百 MB 收进内存', async () => {
+    const downloads = fakeDownloads();
+    const sink = createDownloadsSink({ downloads });
+    let pulled = 0;
+    // 一个「一读就记账」的流：直链分支不该碰它
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 3) controller.close();
+        else controller.enqueue(new Uint8Array(1024));
+      },
+    });
+    const result = await sink.writeFile(
+      ['拼多多'],
+      'video.mp4',
+      stream,
+      new AbortController().signal,
+      { sourceUrl: 'https://cdn.example.com/v.mp4' },
+    );
+    expect(result.name).toBe('video.mp4');
+    expect(downloads.download).toHaveBeenCalledOnce();
+    expect(
+      (downloads.download as never as { mock: { calls: unknown[][] } }).mock.calls[0]?.[0],
+    ).toMatchObject({
+      url: 'https://cdn.example.com/v.mp4',
+      filename: '电商素材/拼多多/video.mp4',
+    });
+    // 流会预取一次填充内部队列，所以按「最多 1 次」判；关键是没把它读完（读完 > 3 次）
+    expect(pulled, '直链分支不应把本地流读完').toBeLessThanOrEqual(1);
+  });
+
+  it('空 Blob + sourceUrl 不走直链（否则会落一个 0 字节文件）', async () => {
+    const downloads = fakeDownloads();
+    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:empty');
+    const sink = createDownloadsSink({ downloads });
+    await sink.writeFile(['拼多多'], 'a.jpg', new Blob([]), new AbortController().signal, {
+      sourceUrl: 'https://cdn.example.com/a.jpg',
+    });
+    const calls = (downloads.download as never as { mock: { calls: Array<[{ url: string }]> } })
+      .mock.calls;
+    expect(calls[0]?.[0].url).toBe('blob:empty');
+    create.mockRestore();
+  });
+
+  it('exists 查下载记录时用大小写不敏感的正则（Windows 下载目录不区分大小写）', async () => {
+    const downloads = fakeDownloads();
+    const search = vi.fn(async () => [] as chrome.downloads.DownloadItem[]);
+    downloads.search = search;
+    const sink = createDownloadsSink({ downloads });
+    expect(await sink.exists(['拼多多'], 'Main.JPG')).toBeNull();
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ filenameRegex: '(?i)电商素材/拼多多/Main\\.JPG' }),
+    );
+  });
+
   it('状态变化时合并写 IndexedDB（500ms 节流）', async () => {
     vi.useFakeTimers();
     const persist = vi.fn(async () => {});

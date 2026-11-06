@@ -1,3 +1,4 @@
+import type { ErrorCode } from '../errors/codes';
 import { EcError } from '../errors/ec-error';
 import type { Logger } from '../log/logger';
 import { isExpired } from './expiry';
@@ -12,7 +13,7 @@ import type { Fetcher, FetchOpts, SniffResult } from './types';
  *
  * 集中在这一处的规则：
  *   · credentials:'omit', cache:'no-store' —— 不带 Cookie，不用缓存（§9.7、§13）
- *   · 404/410 → 换下一个候选；全部 404 才报 HTTP_404
+ *   · 地址级失败（404/410/403/429/5xx）→ 换下一个候选；全部失败才抛最后一个错误
  *   · 403/429/5xx/超时/网络错误重试 3 次（retry.ts）；403 重试前先判链接是否过期
  *   · 图片 20 秒**总**超时；视频 30 秒**空闲**超时（stream-timers.ts）
  *   · Content-Type 不能是 text/html（CDN 拒绝访问时常返回 200 的 HTML 错误页）
@@ -25,6 +26,25 @@ export const IMAGE_TIMEOUT_MS = 20_000;
 export const VIDEO_IDLE_TIMEOUT_MS = 30_000;
 
 const HTML_TYPES = ['text/html', 'application/xhtml+xml'];
+
+/**
+ * 这些错误码说明「**这个地址**不行」，换下一个候选还有救（§9.7 候选切换）。
+ *
+ * 404/410 本来就是这么处理的；403/429/5xx 同样属于地址级失败 ——
+ * 同一张图的候选通常落在不同 CDN 域名上（原图 / 缩略图变体 / 备用域），
+ * 一个域名对某个对象回 403（已删除、签名校验）或 5xx（灰度节点异常/限流）时，
+ * 下一个候选往往能直接成功。旧实现只对 404 换候选，于是本可成功的图被记成失败。
+ *
+ * 刻意**不**包含 NETWORK / TIMEOUT / CANCELED：
+ * 网络断了或用户取消是所有候选共享的失败，逐个候选再各重试 3 次会把
+ * 「断网」变成每张图多等十几秒（几百张图就是几十分钟的空转）。
+ */
+const CANDIDATE_SWITCH_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  'HTTP_403',
+  'HTTP_404',
+  'HTTP_429',
+  'HTTP_5XX',
+]);
 
 export interface FetcherOptions {
   fetchImpl?: typeof fetch;
@@ -53,6 +73,30 @@ export interface FetcherApi extends Fetcher {
   fetchStream(url: string, opts: FetchOpts): Promise<Response>;
 }
 
+/**
+ * 用新的 body 重建响应，并把 `Response` 的原生属性补回去。
+ *
+ * `new Response(stream, { status, statusText, headers })` 只能带上这四个，
+ * `url` / `redirected` / `type` 一律退回默认值（空串 / false / 'default'）：
+ * 于是跟着 302 跳转拿到的最终地址在日志里变成空串，排查「这个 CDN 到底把我指到哪了」时完全没用。
+ * 这三个是只读 getter，实例本身可扩展，用 defineProperty 覆盖成实际值即可。
+ */
+function rebuildResponse(body: ReadableStream<Uint8Array> | null, source: Response): Response {
+  const rebuilt = new Response(body, {
+    status: source.status,
+    statusText: source.statusText,
+    headers: source.headers,
+  });
+  try {
+    Object.defineProperty(rebuilt, 'url', { value: source.url });
+    Object.defineProperty(rebuilt, 'redirected', { value: source.redirected });
+    Object.defineProperty(rebuilt, 'type', { value: source.type });
+  } catch {
+    /* 极端情况下被冻结的对象：宁可不带元信息，也不能让下载失败 */
+  }
+  return rebuilt;
+}
+
 export function createFetcher(options: FetcherOptions = {}): FetcherApi {
   const fetchImpl = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
   const limiter = options.limiter ?? hostLimiter();
@@ -63,11 +107,19 @@ export function createFetcher(options: FetcherOptions = {}): FetcherApi {
   async function requestOnce(url: string, opts: FetchOpts): Promise<Response> {
     if (opts.signal.aborted) throw new EcError('CANCELED');
     const host = opts.host ?? hostOf(url);
+    const startedAt = timers.now();
+
+    /**
+     * 连接阶段也必须被取消：外部 abort 要能立刻打断挂起的连接。
+     *
+     * 这里不能直接用 AbortSignal.timeout：它一旦开弓就没有回头路，不能在中途 clear，
+     * 会在 body 已经读到一半时把流掐断（`withDeadline` 那边再报出来就变成 CANCELED 了）。
+     * 连接阶段要的是「拿到响应头就取消计时」，所以还是手写一个可清除的计时器。
+     */
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     opts.signal.addEventListener('abort', onAbort, { once: true });
 
-    // 连接阶段也必须有上限，否则一个挂起的连接会永远占着并发额度
     const headerTimeoutMs = opts.kind === 'image' ? IMAGE_TIMEOUT_MS : VIDEO_IDLE_TIMEOUT_MS;
     let headerTimedOut = false;
     const headerTimer = timers.setTimeout(() => {
@@ -108,16 +160,17 @@ export function createFetcher(options: FetcherOptions = {}): FetcherApi {
       if (!response.body) return response;
 
       // §9.7：图片总超时（含 body），视频空闲超时（不限总时长）
-      const guarded =
-        opts.kind === 'image'
-          ? withDeadline(response.body, IMAGE_TIMEOUT_MS, timers)
-          : withIdleTimeout(response.body, VIDEO_IDLE_TIMEOUT_MS, timers);
-
-      return new Response(guarded, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      });
+      if (opts.kind === 'image') {
+        // 「总共 20 秒」是从发出请求开始算的，因此要扣掉已经花在等响应头上的时间；
+        // 直接再给 20 秒会变成「连接 20s + body 20s = 40s」，慢 CDN 上翻倍。
+        const remaining = IMAGE_TIMEOUT_MS - (timers.now() - startedAt);
+        if (remaining <= 0) throw new EcError('TIMEOUT');
+        return rebuildResponse(withDeadline(response.body, remaining, timers), response);
+      }
+      return rebuildResponse(
+        withIdleTimeout(response.body, VIDEO_IDLE_TIMEOUT_MS, timers),
+        response,
+      );
     } catch (e) {
       if (opts.signal.aborted) throw new EcError('CANCELED');
       if (headerTimedOut) throw new EcError('TIMEOUT');
@@ -155,25 +208,19 @@ export function createFetcher(options: FetcherOptions = {}): FetcherApi {
     const response = await requestWithRetry(url, opts);
     const { head, rest } = await readHead(response.body, SNIFF_BYTES);
     const sniffed = sniff(head);
-    const rebuilt =
-      rest === null
-        ? new Response(null, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: response.headers,
-          })
-        : new Response(rest, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: response.headers,
-          });
-    return { response: rebuilt, head, sniffed, headBytes: head.byteLength };
+    return {
+      response: rebuildResponse(rest, response),
+      head,
+      sniffed,
+      headBytes: head.byteLength,
+    };
   }
 
   return {
     /**
      * 依次尝试候选地址（§9.7 候选切换）。
-     * 404/410 或内容类型不符 → 下一个候选；其他错误已经重试过，直接抛给任务层。
+     * 地址级失败（404/410/403/429/5xx）或内容类型不符 → 下一个候选；
+     * 网络类失败（断网、超时、取消）已经重试过，直接抛给任务层。
      */
     async fetchWithFallback(candidates: string[], opts: FetchOpts): Promise<Response> {
       if (candidates.length === 0) throw new EcError('HTTP_404', { reason: 'no-candidates' });
@@ -193,7 +240,12 @@ export function createFetcher(options: FetcherOptions = {}): FetcherApi {
         } catch (e) {
           const error = EcError.from(e);
           if (error.code === 'CANCELED') throw error;
-          if (error.code === 'HTTP_404') {
+          if (CANDIDATE_SWITCH_CODES.has(error.code)) {
+            // 404 是「这个地址没有」的常态分支，不值得刷日志；
+            // 403/429/5xx 换候选是本次新增的行为，失败了要能在诊断里看到
+            if (error.code !== 'HTTP_404') {
+              log?.debug('候选失败，换下一个候选', { url: stripQuery(url), code: error.code });
+            }
             lastError = error;
             continue;
           }

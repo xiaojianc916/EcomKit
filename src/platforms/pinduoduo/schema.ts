@@ -372,11 +372,30 @@ export interface PddRoots {
 }
 
 /**
+ * findPddRoots 的结果缓存。
+ *
+ * 同一个 payload 会在一次解析里被问好几次：
+ * matchesProductId()（核对是不是当前商品）→ draftFromPayload()（真正取数据）
+ * → describeDraft()（诊断摘要）。rawData / 抓包响应都是解析好的只读 JSON 对象，
+ * 一次商品解析等于对同一个几 MB 的对象跑 3 遍候选路径查找。
+ * 用 WeakMap 挂在对象上，payload 被回收时缓存自动消失（不会像 Map 那样囤内存）。
+ */
+const ROOTS_CACHE = new WeakMap<object, PddRoots | null>();
+
+/**
  * 在任意信封里找 goods / mall 容器。
  * 找不到 goods 时返回 mall 也保留（部分接口只回店铺信息）。
  */
 export function findPddRoots(payload: unknown): PddRoots | null {
   if (payload === null || typeof payload !== 'object') return null;
+  const cached = ROOTS_CACHE.get(payload as object);
+  if (cached !== undefined) return cached;
+  const found = findPddRootsUncached(payload);
+  ROOTS_CACHE.set(payload as object, found);
+  return found;
+}
+
+function findPddRootsUncached(payload: unknown): PddRoots | null {
   for (const rootPath of PDD_ROOT_PATHS) {
     const root = rootPath === '' ? payload : firstNonEmpty(payload, [rootPath]);
     if (root === undefined || root === null || typeof root !== 'object') continue;

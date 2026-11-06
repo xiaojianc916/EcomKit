@@ -35,10 +35,10 @@ export function usePortalContainer(): HTMLElement | ShadowRoot | null {
 /**
  * 转成 Radix Portal 的 container prop。
  * Radix 接受 HTMLElement | DocumentFragment；ShadowRoot 是 DocumentFragment 的子类型，
- * 但为了类型干净，这里显式判一下。
+ * 所以这里不需要分支判断 —— 直接透传即可（旧实现写了一个
+ * \`container instanceof ShadowRoot ? container : container\` 的三元，两个分支返回同一个值，
+ * 实际等价于 \`return container\`，留着只会让人以为这里真的做了什么映射）。
  */
 export function usePortalTarget(): HTMLElement | DocumentFragment | undefined {
-  const container = usePortalContainer();
-  if (container === null) return undefined;
-  return container instanceof ShadowRoot ? container : container;
+  return usePortalContainer() ?? undefined;
 }

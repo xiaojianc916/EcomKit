@@ -7,7 +7,7 @@ import { NAME_LIMITS, sanitizeName } from '../../naming/sanitize';
 import { uniqueFileName } from '../../naming/unique';
 import { alwaysReadyProbe, checkDirStatus } from '../dir-status';
 import { mapFsError } from '../fs-errors';
-import { blobToText, countingStream, throwIfAborted, toStream } from '../stream-utils';
+import { blobToText, streamToBlob, throwIfAborted } from '../stream-utils';
 import type { DirEntry, DirState, FsSink, RelPath, WriteFileOptions, WriteResult } from '../types';
 
 /**
@@ -51,6 +51,46 @@ export interface DownloadsApi {
 }
 
 /**
+ * chrome.downloads 的官方 Promise 形态（MV3 + Chrome 96 起支持，122 早已覆盖）。
+ * 声明在 @types/chrome 里只有回调重载时才需要自己包一层，这里两种都接住：
+ * 拿不到 Promise 就退回回调 + runtime.lastError，保证老环境不会直接失败。
+ */
+type DownloadFn = {
+  (options: chrome.downloads.DownloadOptions): Promise<number>;
+  (options: chrome.downloads.DownloadOptions, cb: (id: number) => void): void;
+};
+type SearchFn = {
+  (query: chrome.downloads.DownloadQuery): Promise<chrome.downloads.DownloadItem[]>;
+  (
+    query: chrome.downloads.DownloadQuery,
+    cb: (items: chrome.downloads.DownloadItem[]) => void,
+  ): void;
+};
+
+function callbackDownload(
+  api: { download: DownloadFn },
+  options: chrome.downloads.DownloadOptions,
+) {
+  return new Promise<number>((resolve, reject) => {
+    api.download(options, (id) => {
+      const error = chrome.runtime.lastError;
+      if (error || id === undefined) reject(new EcError('WRITE_FAILED', error?.message));
+      else resolve(id);
+    });
+  });
+}
+
+function callbackSearch(api: { search: SearchFn }, query: chrome.downloads.DownloadQuery) {
+  return new Promise<chrome.downloads.DownloadItem[]>((resolve, reject) => {
+    api.search(query, (items) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new EcError('WRITE_FAILED', error.message));
+      else resolve(items);
+    });
+  });
+}
+
+/**
  * 默认的下载通道。
  *
  * **chrome.downloads 不在 offscreen 文档里**（Chrome 只给 offscreen 留 chrome.runtime），
@@ -61,23 +101,23 @@ export interface DownloadsApi {
 function defaultDownloadsApi(): DownloadsApi {
   const api = (globalThis as { chrome?: typeof chrome }).chrome?.downloads;
   if (!api) return createBridgeDownloadsApi();
+  const typed = api as unknown as { download: DownloadFn; search: SearchFn };
+  /** 不传回调时 Chrome 直接返回 Promise；个别老环境会同步抛「参数不匹配」，那就退回回调式 */
+  const callPromise = <T>(run: () => unknown): Promise<T> | null => {
+    try {
+      const maybe = run();
+      return maybe instanceof Promise ? (maybe as Promise<T>) : null;
+    } catch {
+      return null;
+    }
+  };
+
   return {
     download: (options) =>
-      new Promise<number>((resolve, reject) => {
-        api.download(options, (id) => {
-          const error = chrome.runtime.lastError;
-          if (error || id === undefined) reject(new EcError('WRITE_FAILED', error?.message));
-          else resolve(id);
-        });
-      }),
+      callPromise<number>(() => typed.download(options)) ?? callbackDownload(typed, options),
     search: (query) =>
-      new Promise<chrome.downloads.DownloadItem[]>((resolve, reject) => {
-        api.search(query, (items) => {
-          const error = chrome.runtime.lastError;
-          if (error) reject(new EcError('WRITE_FAILED', error.message));
-          else resolve(items);
-        });
-      }),
+      callPromise<chrome.downloads.DownloadItem[]>(() => typed.search(query)) ??
+      callbackSearch(typed, query),
   };
 }
 
@@ -238,7 +278,13 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
       isDir(path);
     },
 
-    /** 有同名文件（内存树 + 下载记录里查）时追加 (2)、(3)…（§9.2） */
+    /**
+     * 有同名文件（内存树 + 下载记录里查）时追加 (2)、(3)…（§9.2）
+     *
+     * files 的 key 已经是 pathKey 形式（小写），所以这里的 Set 直接就是 nameKey 集合，
+     * uniqueName 会走 Set 快路径，不用再整份小写一遍。
+     * 一个目录几百个文件时，原来每次都要扫全表 + 每个 key 都 toLowerCase。
+     */
     async resolveName(dir: RelPath, stem: string, ext: string): Promise<string> {
       const prefix = downloadDirPrefix(rootName, dir).toLowerCase();
       const existing = new Set<string>();
@@ -270,17 +316,20 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
     ): Promise<WriteResult> {
       throwIfAborted(signal);
 
-      const blob = data instanceof Blob ? data : await streamToBlobCounting(data);
-      throwIfAborted(signal);
-
       const filename = downloadPathName(rootName, dir, downloadsManifestName(name));
 
       /**
        * 内容没被改写过（没有 WebP→JPG 转码）时，直接把**原始 https 地址**交给浏览器下载：
        * chrome.downloads 只有对 http(s)/blob URL 才保留 filename，用 data: URL 时
        * Chrome 会把文件存成 GUID（实测），用户拿到的是一堆无名文件。
+       *
+       * **先走这条再收流**：以前是先把整个流收成 Blob 再判断，几百 MB 的视频光是
+       * 「收进内存」就可能 OOM（§9.9 要求内存恒定），而这条路径根本不需要本地字节。
+       * 原来用 blob.size > 0 挡空内容，现在换成「确实是流（大小未知，至少会走一次网络）
+       * 或者 Blob 非空」—— 空 Blob 交给直链下载会落一个 0 字节文件。
        */
-      if (opts?.sourceUrl?.startsWith('http') && blob.size > 0) {
+      const unknownSize = !(data instanceof Blob);
+      if (opts?.sourceUrl?.startsWith('http') && (unknownSize || data.size > 0)) {
         try {
           const sourceId = await api().download({
             url: opts.sourceUrl,
@@ -290,7 +339,13 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
           });
           const [sourceItem] = await api().search({ id: sourceId });
           if (sourceItem?.filename) {
-            const size = sourceItem.fileSize ?? sourceItem.totalBytes ?? blob.size;
+            const reported = sourceItem.fileSize ?? sourceItem.totalBytes;
+            const size =
+              reported !== undefined && reported > 0
+                ? reported
+                : unknownSize
+                  ? 0
+                  : (data as Blob).size;
             files.set(pathKey(sourceItem.filename), size);
             files.set(pathKey(filename), size);
             schedulePersist();
@@ -300,6 +355,19 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
           // 远端直连失败（需要 Referer / 已过期）就退回本地字节
         }
       }
+
+      /**
+       * 走到这里说明必须把本地字节交给 chrome.downloads —— 它只认 URL，
+       * 而 data:/blob: URL 的字节终归要在内存里。所以要抑制这里的峰值：
+       *   · 上游是 Blob 时直接复用，不做第二份拷贝；
+       *   · 上游是流（几十上百 MB 的视频）才收成 Blob，收完立刻转 ObjectURL，
+       *     revoke 放在 finally（见下），峰值 = 一份 Blob + 一份 URL 引用，不会叠加。
+       * 真正的零拷贝只有上面 sourceUrl 直链分支能拿到；转码过的图必须走这条路，
+       * 引擎已保证图片体积在几 MB 量级，视频则总是带着 sourceUrl 进来。
+       */
+      throwIfAborted(signal);
+      const blob = data instanceof Blob ? data : await streamToBlob(data);
+      throwIfAborted(signal);
       const url = URL.createObjectURL(blob);
       try {
         const id = await api().download({
@@ -406,7 +474,7 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
       const remembered = files.get(pathKey(filename));
       if (remembered !== undefined) return remembered;
       try {
-        const items = await api().search({ filenameRegex: escapeForRegex(filename), limit: 1 });
+        const items = await api().search({ filenameRegex: filenamePattern(filename), limit: 1 });
         const item = items[0];
         if (!item) return null;
         return item.fileSize ?? item.totalBytes ?? 0;
@@ -423,15 +491,13 @@ function fileNameOf(path: string): string {
   return idx >= 0 ? path.slice(idx + 1) : path;
 }
 
-function escapeForRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-async function streamToBlobCounting(stream: ReadableStream<Uint8Array>): Promise<Blob> {
-  const { stream: counter, total } = countingStream();
-  const blob = await new Response(toStream(stream).pipeThrough(counter)).blob();
-  void total();
-  return blob;
+/**
+ * 转义成 filenameRegex 用的字面量。
+ * chrome.downloads 的 filenameRegex 是区分大小写的正则：Windows 下载目录不区分大小写，
+ * 用户实际可能把文件存成 MAIN.JPG，所以整条 pattern 加 (?i)。
+ */
+function filenamePattern(text: string): string {
+  return `(?i)${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`;
 }
 
 /** 读取内存里的文本副本（诊断和单测用） */

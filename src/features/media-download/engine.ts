@@ -14,7 +14,7 @@ import type { FsGateway } from '../../kernel/fs/types';
 import type { ItemResult, JobTypeDef, WorkItem } from '../../kernel/jobs/types';
 import { createLogger, type Logger } from '../../kernel/log/logger';
 import { isConvertibleMime } from '../../kernel/media/convert';
-import { sniff } from '../../kernel/net/sniff';
+import { readHead, SNIFF_BYTES, sniff } from '../../kernel/net/sniff';
 import {
   buildFolderManifest,
   type FolderManifest,
@@ -92,6 +92,61 @@ function safeJson(v: unknown): string {
 
 export function itemTargetDir(item: Pick<WorkItem, 'dir'>): string[] {
   return [...item.dir];
+}
+
+/**
+ * 视频的流式落盘（§9.9「几百 MB 的视频内存占用恒定」）。
+ *
+ * 和图片的区别：图片要先拿全量字节才能嗅探 + 转码，而视频只需要
+ * 「读前 32 字节定扩展名 → 剩下的流直接 pipe 到文件」，全程不把内容收进内存。
+ *
+ * 两个必须处理的边界：
+ *   · HLS 播放列表：m3u8 是几百字节的文本，直接落盘会得到一个 0:00 的假视频。
+ *     读头嗅出来就直接报 UNSUPPORTED_STREAM（分片合并见 kernel/media/hls.ts）。
+ *   · 重试 / 候选切换发生在 fetcher 里，拿到的已经是最终可用的流；
+ *     写入层（FSA）失败会 abort，不留半截文件。
+ */
+async function streamVideo(
+  item: WorkItem,
+  response: Response,
+  dir: string[],
+  ctx: {
+    fs: import('../../kernel/fs/types').FsGateway;
+    signal: AbortSignal;
+    log: import('../../kernel/log/logger').Logger;
+  },
+): Promise<ItemResult> {
+  const { head, rest } = await readHead(response.body, SNIFF_BYTES);
+  const sniffed = sniff(head);
+  if (sniffed.container === 'hls' || sniffed.mime === 'application/vnd.apple.mpegurl') {
+    throw new EcError('UNSUPPORTED_STREAM', { reason: 'hls-playlist' });
+  }
+  // 空响应体：CDN 偶尔回 200 + 0 字节（对象被删但缓存还没失效）。
+  // 落一个 0 字节文件出来，用户会在资源管理器里看到一个打不开的「视频」，
+  // 而且增量记录会把这条路径记成已完成，下次也不会重下。
+  if (head.byteLength === 0 || rest === null) {
+    throw new EcError('NETWORK', { reason: 'empty-video-body' });
+  }
+  const ext = MIME_EXT[sniffed.mime] ?? sniffed.ext ?? 'mp4';
+  await ctx.fs.sink.ensureDir(dir as never);
+  const name = await ctx.fs.sink.resolveName(dir as never, item.stem, ext);
+  // downloads 模式：把**原始直链**交给浏览器下载通道，它自己流式落盘，
+  // 比把几百 MB 字节塞进扩展内存再转交可靠得多（文件名也才保得住）。
+  const sourceUrl = item.candidates[0];
+  const written = await ctx.fs.writeFile(
+    dir as never,
+    name,
+    rest,
+    ctx.signal,
+    sourceUrl === undefined ? {} : { sourceUrl },
+  );
+  ctx.log.debug('视频写入完成', { item: item.itemKey, size: written.size });
+  return {
+    itemKey: item.itemKey,
+    status: 'ok',
+    bytes: written.size,
+    path: [...dir, written.name].join('/'),
+  };
 }
 
 /**
@@ -196,6 +251,20 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
         signal: ctx.signal,
         kind: item.expect,
       });
+
+      /**
+       * 视频**不能**先 res.blob()。
+       *
+       * blob() 会把整个响应体收进内存：一个 500MB 的视频就是 500MB 常驻内存，
+       * 而且 concurrent 2 个视频同时下就是 1GB —— 扩展进程直接被打爆。
+       * 视频也不需要转码（只做扩展名判定），所以走「读 32 字节嗅探 + 剩下的流直接落盘」，
+       * 内存占用与文件大小无关（§9.9）。
+       */
+      if (item.expect === 'video') {
+        const streamed = await streamVideo(item, res, dir, ctx);
+        return streamed;
+      }
+
       const blob = await res.blob();
       ctx.log.debug('下载完成', { item: item.itemKey, size: blob.size, type: blob.type });
 

@@ -1,4 +1,4 @@
-import { type ComponentType, useEffect, useMemo, useState } from 'react';
+import { type ComponentType, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
   MediaDownloadSettings,
@@ -17,6 +17,9 @@ import { featureSettings, getSettings, setSettings } from '../../kernel/settings
  */
 type Section = 'save' | 'naming' | 'media' | 'shell' | 'advanced' | 'about';
 
+/** v1 只有这一个功能：命名等设置都挂在它下面 */
+const MEDIA_FEATURE_ID = 'media-download';
+
 const SECTIONS: { id: Section; title: string }[] = [
   { id: 'save', title: '保存位置' },
   { id: 'naming', title: '文件命名' },
@@ -26,20 +29,52 @@ const SECTIONS: { id: Section; title: string }[] = [
   { id: 'about', title: '关于' },
 ];
 
+/** 设置写入的防抖间隔。输入框每敲一个字都写一次 chrome.storage 会明显掉帧 */
+const SAVE_DEBOUNCE_MS = 300;
+
 export function OptionsApp() {
   const [section, setSection] = useState<Section>('save');
   const [settings, setLocal] = useState<GlobalSettings | null>(null);
+  /** 最新一次待写入的设置（防抖窗口内以它为准，避免用旧闭包覆盖新值） */
+  const pendingSave = useRef<GlobalSettings | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     void getSettings().then(setLocal);
   }, []);
 
-  const update = async (patch: Partial<GlobalSettings>) => {
-    if (!settings) return;
-    const next = { ...settings, ...patch };
-    setLocal(next);
-    await setSettings(next);
-  };
+  // 卸载前把最后一次改动落盘，用户改完立刻切走也不会丢
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+      const pending = pendingSave.current;
+      pendingSave.current = null;
+      if (pending !== null) void setSettings(pending).catch(() => {});
+    };
+  }, []);
+
+  /**
+   * 改设置：界面立刻更新，落盘防抖。
+   *
+   * 旧实现每敲一个字符就 `await setSettings(...)`，而它在写之前会先做一次
+   * 全量 Zod 解析 + chrome.storage 往返；在「根目录绝对路径」这种长输入框里
+   * 表现为明显的输入延迟。这里把**状态更新**（同步）和**落盘**（防抖）拆开。
+   */
+  const update = useCallback((patch: Partial<GlobalSettings>) => {
+    setLocal((current) => {
+      if (!current) return current;
+      const next = { ...current, ...patch };
+      pendingSave.current = next;
+      if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        saveTimer.current = null;
+        const value = pendingSave.current;
+        pendingSave.current = null;
+        if (value !== null) void setSettings(value).catch(() => {});
+      }, SAVE_DEBOUNCE_MS);
+      return next;
+    });
+  }, []);
 
   if (!settings) {
     return (
@@ -128,10 +163,41 @@ function SaveSection({
 
 function NamingSection() {
   // 命名设置属于 media-download 功能，存在 feature:media-download 下；
-  // 这里给实时预览，规则本身由功能模块负责（§9.1）
-  const [template, setTemplate] = useState('{title:30}_{id}');
+  // 这里是**同一个**模板的读写入口（旧实现是写死的本地 state，用户在设置页改模板
+  // 既不落盘也不影响下载，等于一个假的设置项）。
+  const [template, setTemplate] = useState('');
   const valid = useMemo(() => templateHasId(template), [template]);
   const preview = useMemo(() => renderPreview(template), [template]);
+
+  useEffect(() => {
+    let alive = true;
+    void featureSettings({
+      featureId: MEDIA_FEATURE_ID,
+      schema: MediaDownloadSettings,
+      defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+    })
+      .get()
+      .then((value) => {
+        if (alive) setTemplate(value.folderTemplate);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const onChange = (next: string): void => {
+    setTemplate(next);
+    // 非法模板不落盘：模板缺 {id} 时下载会全部退化成模板路径，宁可不保存也不要存个坏值
+    if (!templateHasId(next)) return;
+    void featureSettings({
+      featureId: MEDIA_FEATURE_ID,
+      schema: MediaDownloadSettings,
+      defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+    })
+      .update((current) => ({ ...current, folderTemplate: next }))
+      .catch(() => {});
+  };
 
   return (
     <>
@@ -139,11 +205,7 @@ function NamingSection() {
       <p className="opt__desc">商品文件夹名由模板生成，模板里必须包含 {'{id}'}。</p>
       <div className="opt__field">
         <span className="opt__label">商品文件夹模板</span>
-        <input
-          className="opt__input"
-          value={template}
-          onChange={(e) => setTemplate(e.target.value)}
-        />
+        <input className="opt__input" value={template} onChange={(e) => onChange(e.target.value)} />
         {valid ? null : (
           <span className="opt__err">模板缺少 {'{id}'}，无法按商品 ID 定位文件夹</span>
         )}

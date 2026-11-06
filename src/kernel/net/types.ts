@@ -16,7 +16,7 @@ export interface FetchOpts {
 }
 
 export interface Fetcher {
-  /** 依次尝试候选地址，404/410 直接换下一个；全部失败抛最后一个 EcError */
+  /** 依次尝试候选地址：404/410/403/429/5xx 或内容不符就换下一个；全部失败抛最后一个 EcError */
   fetchWithFallback(candidates: string[], opts: FetchOpts): Promise<Response>;
   /** 流式拿到视频，大小不限 */
   fetchStream(url: string, opts: FetchOpts): Promise<Response>;

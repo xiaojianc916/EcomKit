@@ -80,42 +80,7 @@ async function boot(): Promise<Booted> {
 
   const gateway = createFsGateway({ sink });
   // 引擎日志同时进本地 console 和 bg 的日志缓冲（诊断包里才看得到）
-  const engineLog: Logger = {
-    debug: (m, d) => log.debug(m, d),
-    info: (m, d) => {
-      log.info(m, d);
-      forwardToBackground('info', 'engine', m, d);
-    },
-    warn: (m, d) => {
-      log.warn(m, d);
-      forwardToBackground('warn', 'engine', m, d);
-    },
-    error: (m, d) => {
-      log.error(m, d);
-      forwardToBackground('error', 'engine', m, d);
-    },
-    scope: (name) => {
-      const inner = engineLog.scope;
-      void inner;
-      return scopedEngineLog(name);
-    },
-  };
-  const scopedEngineLog = (name: string): Logger => ({
-    debug: (m, d) => log.debug(m, d),
-    info: (m, d) => {
-      log.info(m, d);
-      forwardToBackground('info', `engine.${name}`, m, d);
-    },
-    warn: (m, d) => {
-      log.warn(m, d);
-      forwardToBackground('warn', `engine.${name}`, m, d);
-    },
-    error: (m, d) => {
-      log.error(m, d);
-      forwardToBackground('error', `engine.${name}`, m, d);
-    },
-    scope: (sub) => scopedEngineLog(`${name}.${sub}`),
-  });
+  const engineLog = scopedEngineLog('engine');
 
   const runner = createJobRunner({
     gateway,
@@ -139,7 +104,7 @@ async function boot(): Promise<Booted> {
   onMessage('engine.settingsChanged', async ({ data, sender }) => {
     assertTrusted(sender, 'engine.settingsChanged');
     const parsed = GlobalSettingsSchema.safeParse(data);
-    if (parsed.success) applySettings(parsed.data, gateway, runner, isE2E);
+    if (parsed.success) await applySettings(parsed.data, gateway, runner, isE2E);
   });
 
   log.info('offscreen booting', {
@@ -178,25 +143,63 @@ async function fetchSettings(): Promise<GlobalSettings> {
   return DEFAULT_GLOBAL_SETTINGS;
 }
 
+/**
+ * 带作用域的引擎日志。
+ *
+ * offscreen 的 console 不在任何 DevTools 面板里，所以每条日志都要转发给 bg 的日志缓冲，
+ * 诊断包才看得到「哪个模块、什么时候、哪一步失败」。作用域前缀由这里统一拼，
+ * 避免每个调用点自己写 'engine.xxx' 写错名字。
+ */
+function scopedEngineLog(name: string): Logger {
+  return {
+    debug: (m, d) => log.debug(m, d),
+    info: (m, d) => {
+      log.info(m, d);
+      forwardToBackground('info', name, m, d);
+    },
+    warn: (m, d) => {
+      log.warn(m, d);
+      forwardToBackground('warn', name, m, d);
+    },
+    error: (m, d) => {
+      log.error(m, d);
+      forwardToBackground('error', name, m, d);
+    },
+    scope: (sub) => scopedEngineLog(`${name}.${sub}`),
+  };
+}
+
 /** 把异常压成一行可读文本（只进日志） */
 function describeError(e: unknown): string {
   if (e instanceof Error) return `${e.name}: ${e.message}`;
   return String(e);
 }
 
-/** 把全局设置应用到正在运行的引擎上（保存方式 / 并发数） */
-function applySettings(
+/**
+ * 把全局设置应用到正在运行的引擎上（保存方式 / 并发数）。
+ *
+ * 切到 downloads 时必须带上 IndexedDB 里的历史记录和持久化回调：
+ * 旧实现在这里直接 `createDownloadsSink()`，新 sink 的初始文件表是空的，
+ * 于是用户「在设置里切换一次保存方式」就丢掉了全部增量下载记录，
+ * 紧接着的第二次下载会把整个商品重下一遍（目录里出现一堆 (2) 副本）。
+ */
+async function applySettings(
   next: GlobalSettings,
   gateway: FsGateway,
   runner: JobRunner,
   isE2E: boolean,
-): void {
+): Promise<void> {
   runner.setConcurrency(next.jobs.concurrency);
   if (isE2E) return;
   const wantDownloads = next.save.mode === 'downloads';
   const current = gateway.sink.kind;
   if (wantDownloads && current !== 'downloads') {
-    gateway.setSink(createDownloadsSink());
+    gateway.setSink(
+      createDownloadsSink({
+        initialFiles: await loadDownloadRecords(),
+        persist: saveDownloadRecords,
+      }),
+    );
     log.info('写入层切换为 downloads');
   } else if (!wantDownloads && current !== 'fsa') {
     gateway.setSink(createFsaSink());
@@ -260,11 +263,6 @@ async function recordBoot(info: { ok: boolean; sink?: string; error?: string }):
   } catch {
     // storage.session 不可用（极端情况）就放弃记录
   }
-}
-
-function _describe(e: unknown): string {
-  if (e instanceof Error) return `${e.name}: ${e.message}`;
-  return String(e);
 }
 
 /**
@@ -346,7 +344,7 @@ onMessage('engine.fsChanged', async ({ sender }): Promise<DirState> => {
   const { gateway, runner } = await ensureBooted();
   // 授权小窗刚写完句柄，或用户在设置里切了保存方式：重新读设置再判状态
   const settings = await fetchSettings();
-  applySettings(
+  await applySettings(
     settings,
     gateway,
     runner,

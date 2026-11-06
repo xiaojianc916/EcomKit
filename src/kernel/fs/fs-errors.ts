@@ -8,8 +8,21 @@ import { EcError } from '../errors/ec-error';
  * UI 只能按错误码查表显示中文，任何地方都不许直接把 message 显示给用户（CONTRIBUTING）。
  */
 
-/** 磁盘空间不足的几种说法（DOMException 的 name 在不同 Chrome 版本上不一致） */
+/**
+ * 磁盘空间不足的几种说法（DOMException 的 name / message 在不同 Chrome 版本上不一致）。
+ *
+ * 已经是小写，并且提到模块级：mapFsError 会对每一条写失败跑一遍，
+ * 原来在 some 回调里每次调用 hint.toLowerCase() —— 每次都新建 6 个字符串。
+ */
 const DISK_FULL_HINTS = ['quota', 'disk', 'space', '空间', '磁盘'];
+
+function looksLikeDiskFull(text: string): boolean {
+  const lowered = text.toLowerCase();
+  for (const hint of DISK_FULL_HINTS) {
+    if (lowered.includes(hint)) return true;
+  }
+  return false;
+}
 
 export function mapFsError(e: unknown): EcError {
   if (e instanceof EcError) return e;
@@ -28,16 +41,14 @@ export function mapFsError(e: unknown): EcError {
       default:
         break;
     }
-    const lowered = `${e.name} ${e.message}`.toLowerCase();
-    if (DISK_FULL_HINTS.some((hint) => lowered.includes(hint.toLowerCase()))) {
+    if (looksLikeDiskFull(`${e.name} ${e.message}`)) {
       return new EcError('DISK_FULL', { name: e.name });
     }
     return new EcError('WRITE_FAILED', { name: e.name });
   }
 
   if (e instanceof Error) {
-    const lowered = `${e.name} ${e.message}`.toLowerCase();
-    if (DISK_FULL_HINTS.some((hint) => lowered.includes(hint.toLowerCase()))) {
+    if (looksLikeDiskFull(`${e.name} ${e.message}`)) {
       return new EcError('DISK_FULL');
     }
     if (e.name === 'AbortError') return new EcError('CANCELED');

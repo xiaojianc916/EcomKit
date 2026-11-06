@@ -6,6 +6,7 @@ import {
   groupProgress,
   previewAssets,
   rowTags,
+  selectedCountOf,
 } from './asset-row-model';
 
 function makeJob(patch: Partial<JobRecord> = {}): JobRecord {
@@ -178,6 +179,22 @@ describe('previewAssets（§10.3 ④ 前 4 张缩略图加 +N）', () => {
 
   it('不超过 4 张时没有剩余', () => {
     expect(previewAssets([1, 2])).toEqual({ shown: [1, 2], rest: 0 });
+  });
+});
+
+describe('selectedCountOf（挑选模式的半选判断）', () => {
+  const assets = [{ key: 'a' }, { key: 'b' }, { key: 'c' }] as never[];
+
+  it('没有选中时是 0', () => {
+    expect(selectedCountOf(assets, new Set())).toBe(0);
+  });
+
+  it('只数在集合里的那些', () => {
+    expect(selectedCountOf(assets, new Set(['a', 'c']))).toBe(2);
+  });
+
+  it('集合里不属于这一类的 key 不算', () => {
+    expect(selectedCountOf(assets, new Set(['z']))).toBe(0);
   });
 });
 

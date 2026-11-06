@@ -4,6 +4,7 @@ import {
   createEmptyRecord,
   finalStatus,
   finishRecord,
+  initByGroup,
   percentOf,
   processedCount,
 } from './progress';
@@ -88,6 +89,31 @@ describe('applyItemResult', () => {
     expect(r.bytes).toBe(30);
     expect(r.failed).toHaveLength(1);
     expect(r.byGroup.main).toEqual({ total: 2, done: 2, failed: 0, skipped: 0 });
+  });
+
+  it('没有失败时沿用同一个 failed 数组（不白复制；500 项全失败时避免 O(n²)）', () => {
+    const r = emptyRecord();
+    const next = applyItemResult(r, ITEMS[0]!, { itemKey: 'a', status: 'ok', bytes: 1 });
+    expect(next.failed).toBe(r.failed);
+  });
+
+  it('新增失败时返回新数组，不改入参的 failed', () => {
+    const r = emptyRecord();
+    const next = applyItemResult(r, ITEMS[2]!, {
+      itemKey: 'c',
+      status: 'failed',
+      code: 'TIMEOUT',
+    });
+    expect(next.failed).not.toBe(r.failed);
+    expect(r.failed).toEqual([]);
+  });
+});
+
+describe('initByGroup', () => {
+  it('同一 group 累加，跨 group 分开计', () => {
+    const g = initByGroup([item('a', 'main'), item('b', 'main'), item('c', 'detail')]);
+    expect(g.main).toEqual({ total: 2, done: 0, failed: 0, skipped: 0 });
+    expect(g.detail?.total).toBe(1);
   });
 });
 

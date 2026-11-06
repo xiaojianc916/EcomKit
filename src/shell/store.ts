@@ -139,6 +139,28 @@ export function handleBadge(input: HandleBadgeInput): HandleBadge {
   return { kind: 'count', count: total };
 }
 
+/**
+ * 两个角标是否「看起来一样」。
+ *
+ * 外壳每 200ms 重算一次角标，绝大多数时候百分比根本没动。按内容比较，
+ * 内容没变就沿用上一次的对象引用，Handle 就不会跟着重渲染（见 Shell.tsx 的注释）。
+ */
+export function handleBadgeEq(a: HandleBadge, b: HandleBadge): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case 'count':
+      return a.count === (b as typeof a).count;
+    case 'progress':
+      return a.percent === (b as typeof a).percent;
+    case 'attention':
+      return a.count === (b as typeof a).count;
+    case 'resolving':
+    case 'done':
+      return true;
+  }
+}
+
 /** 站点 key：按站点记住把手位置和形态（§10.2「按站点记住」） */
 export function siteKeyOf(host: string): string {
   return `shell:${host.toLowerCase()}`;

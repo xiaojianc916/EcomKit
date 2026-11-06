@@ -3,6 +3,7 @@ import type { Asset, AssetKind } from '../../../kernel/model/asset';
 import { ASSET_KINDS } from '../../../kernel/model/asset';
 import { KIND_LABELS } from '../primary-action-model';
 import { AssetRow } from './AssetRow';
+import { type AssetRowModel, assetRowModel, selectedCountOf } from './asset-row-model';
 import { ThumbGrid } from './ThumbGrid';
 
 /**
@@ -11,6 +12,10 @@ import { ThumbGrid } from './ThumbGrid';
  * 关键点（§8.4）：**某一类素材数量为 0 时，这一行仍然显示，但置灰并标注“无”**。
  * 目的是让用户知道「这个商品确实没有视频」，而不是怀疑插件漏了。
  * 所以这里永远遍历 ASSET_KINDS 四项，而不是遍历 snapshot.assets。
+ *
+ * 每行的状态模型（assetRowModel）在这里算一次，而不是在 AssetRow 里：
+ * AssetRow 是 memo 的，只有把「算好的结果」交给它，比较函数才能按结果比，
+ * 而不是按每 200ms 都换新引用的 job 对象比（那样 memo 形同虚设）。
  */
 export interface AssetListProps {
   /** 快照里的素材，按类别分组后的结果 */
@@ -34,8 +39,10 @@ export interface AssetListProps {
   onRetryKind(kind: AssetKind): void;
   onExpand(kind: AssetKind): void;
   onToggleKey(kind: AssetKind, key: string): void;
+  /** 「全选」只作用于展开的这一类，参数由这里补 */
   onSelectAllIn(kind: AssetKind): void;
-  onClearIn(kind: AssetKind): void;
+  /** 「清除」清掉全部挑选（store 的 clearSelection 本来就不分类别） */
+  onClearIn(): void;
 }
 
 export function AssetList(props: AssetListProps) {
@@ -73,20 +80,24 @@ export function AssetList(props: AssetListProps) {
       <ul aria-label="素材类别" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
         {ASSET_KINDS.map((kind) => {
           const assets = byKind[kind] ?? [];
-          const selectedInKind = assets.filter((a) => selectedKeys.has(a.key)).length;
+          const selectedCount = selectedCountOf(assets, selectedKeys);
+          const model: AssetRowModel = assetRowModel({
+            kind,
+            total: assets.length,
+            selectedCount,
+            resolving,
+            job,
+            skippedCount: skippedByKind?.[kind] ?? 0,
+          });
           return (
             <li key={kind} aria-label={kindTitle(kind)} style={{ listStyle: 'none' }}>
               <AssetRow
                 kind={kind}
                 assets={assets}
-                total={assets.length}
+                model={model}
                 checked={checkedKinds.has(kind)}
-                indeterminate={selectedInKind > 0 && selectedInKind < assets.length}
-                selectedCount={selectedInKind}
+                indeterminate={selectedCount > 0 && selectedCount < assets.length}
                 expanded={expandedKind === kind}
-                resolving={resolving}
-                job={job}
-                skippedCount={skippedByKind?.[kind] ?? 0}
                 onToggleCheck={onToggleCheck}
                 onDownloadKind={onDownloadKind}
                 onRetryKind={onRetryKind}
@@ -98,9 +109,9 @@ export function AssetList(props: AssetListProps) {
                   assets={assets}
                   selectedKeys={selectedKeys}
                   {...(skuLabels === undefined ? {} : { labels: skuLabels })}
-                  onToggleKey={(key) => onToggleKey(kind, key)}
+                  onToggleKey={onToggleKey}
                   onSelectAll={() => onSelectAllIn(kind)}
-                  onClear={() => onClearIn(kind)}
+                  onClear={onClearIn}
                 />
               ) : null}
             </li>

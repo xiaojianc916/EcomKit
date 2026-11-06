@@ -94,8 +94,15 @@ interface RunningJob {
   payload: unknown;
   /** 计划出来的全部工作项（重试和 finalize 要用） */
   items: WorkItem[];
-  /** 还没开始的工作项 */
+  /**
+   * 还没开始的工作项。
+   *
+   * 用「数组 + 游标」而不是每次都 shift()：pump() 每取一个工作项就 shift 一次，
+   * 500 张图的计划就是 500 次 O(n) 元素前移（12.5 万次搬运）。
+   * 头部游标只在「已消费过半」时整体前移一次，摊还 O(1)。
+   */
   pending: WorkItem[];
+  pendingHead: number;
   /** 已经开始、还没结束的工作项数 */
   inFlight: number;
   /** 工作项结果，finalize 要用 */
@@ -104,6 +111,8 @@ interface RunningJob {
   extra: unknown;
   lastSent: string;
   finalized: boolean;
+  /** 缓存的 scope logger：每个工作项都 log.scope() 一次就是几百个临时对象 */
+  scopedLog?: Logger;
 }
 
 export function createJobRunner(options: JobRunnerOptions): JobRunner {
@@ -125,6 +134,16 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   const running = new Map<string, RunningJob>();
   const listeners = new Set<(event: JobEvent) => void>();
   const flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * 还在跑（且还没收尾）的任务。pump() 每一轮都要问「谁还有活」，
+   * 旧实现每次都 [...running.values()].filter(...) 重建一遍数组 —— 每完成一个工作项一次，
+   * 500 张图就是 500 次全表重建。这里改成增量维护：进出都经由 addRunning/removeRunning。
+   */
+  const schedulable = new Set<RunningJob>();
+  /** 等待「队列彻底空闲」的 idle() 调用方；由 notifyIdle 一次性唤醒 */
+  const idleWaiters: Array<() => void> = [];
+  /** 正在跑 finalize 的任务数（含空计划任务） */
+  let finalizing = 0;
 
   const fetcher: Fetcher = options.net ?? createFetcher({ log: log.scope('net'), limiter });
   const media: MediaTools = options.media ?? createMediaTools();
@@ -132,6 +151,59 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   let started = false;
   let roundRobin = 0;
   let pumpScheduled = false;
+  /** schedulable 变成后需要重新落成数组（轮转顺序复用的失效标记） */
+  let rotationDirty = true;
+  let rotationOrder: RunningJob[] = [];
+
+  function refreshRotation(): void {
+    rotationOrder = [...schedulable];
+    rotationDirty = false;
+    if (rotationOrder.length > 0) roundRobin %= rotationOrder.length;
+    else roundRobin = 0;
+  }
+
+  function addRunning(job: RunningJob): void {
+    running.set(job.record.id, job);
+  }
+
+  /**
+   * 计划出来了、确实有工作项要跑，才进入调度集合。
+   *
+   * 不能一创建任务就加进去：plan 是异步的（要读目录、定位商品文件夹），
+   * 这段时间里 pending 还是空的。调度器看到「在集合里但没活」会把它当成跑完的任务清出去，
+   * 等 plan 回来时任务已经不在集合里 —— 工作项永远发不出去，任务卡在 running 直到超时。
+   */
+  function markSchedulable(job: RunningJob): void {
+    schedulable.add(job);
+    rotationDirty = true;
+  }
+
+  function removeRunning(job: RunningJob): void {
+    running.delete(job.record.id);
+    schedulable.delete(job);
+    rotationDirty = true;
+    notifyIdle();
+  }
+
+  /**
+   * 还有没有事情在做。
+   *
+   * 不用 queueLoad() 判：running 里的任务只有在「inFlight 归零 + 待跑项归零」之后才会被移除，
+   * 而 inFlight 恰好是「已经丢进并发池、还没 settle」的项数 —— 所以 running 空了，
+   * 这个 runner 自己那两个池也一定空了（池子里剩下的只有正在收尾的那一个）。
+   * finalizing 单独计：finalize（写 .ecbox.json）在任务从 running 移除之后才跑完，
+   * 不算进去的话 idle() 会早返回，调用方读到的 .ecbox.json 可能还没写完。
+   */
+  function isIdle(): boolean {
+    return running.size === 0 && finalizing === 0;
+  }
+
+  /** 唤醒 idle() 的等待者（只在真的空了的时候唤醒） */
+  function notifyIdle(): void {
+    if (idleWaiters.length === 0 || !isIdle()) return;
+    const list = idleWaiters.splice(0, idleWaiters.length);
+    for (const resolve of list) resolve();
+  }
 
   function clampConcurrency(n: number): number {
     if (!Number.isFinite(n)) return DEFAULT_CONCURRENCY;
@@ -160,6 +232,21 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   }
 
   /**
+   * 发给外面的那一份记录：**去掉 payload**。
+   *
+   * payload 是整份商品快照（标题 + 几十上百个素材 URL + candidates + SKU 列表，
+   * 一个商品实测几十 KB 到几百 KB）。进度事件每 200ms 一条，
+   * offscreen → bg → Port → 页面每一跳都要对这个对象做一次结构化克隆 ——
+   * 500 张图的任务光进度事件就要克隆几十 MB，页面还会因为收到新对象而重渲染。
+   *
+   * 任务内部（retry、finalize）用的是 jobs 里那份完整记录，不受影响；
+   * UI 侧没有任何地方读 job.payload（已全仓 grep 确认）。
+   */
+  function forWire(record: JobRecord): JobRecord {
+    return record.payload == null ? record : { ...record, payload: null };
+  }
+
+  /**
    * 进度落库 + 节流推送。
    * force=true 或已到终态时立即推送（§6.3 约定 2：结束事件立即发送）。
    */
@@ -168,26 +255,32 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     const job = running.get(record.id);
     if (job) job.record = record;
 
-    if (force || isTerminal(record.status)) {
+    const terminal = isTerminal(record.status);
+    if (force || terminal) {
       const timer = flushTimers.get(record.id);
       if (timer !== undefined) {
         clearTimeout(timer);
         flushTimers.delete(record.id);
       }
-      emit({ type: isTerminal(record.status) ? 'done' : 'progress', job: record });
+      emit({ type: terminal ? 'done' : 'progress', job: forWire(record) });
+      if (terminal) notifyIdle();
       return;
     }
 
     const sig = signature(record);
     if (job) {
+      // 状态没变就不推（same-state settle 在缓存命中/秒传时很常见）
       if (job.lastSent === sig) return;
       job.lastSent = sig;
     }
+    // 节流窗口里已经有定时器了：它到点会推最新状态，这里不用再排一个
     if (flushTimers.has(record.id)) return;
     const timer = setTimeout(() => {
       flushTimers.delete(record.id);
       const latest = jobs.get(record.id);
-      if (latest && !isTerminal(latest.status)) emit({ type: 'progress', job: latest });
+      if (latest && !isTerminal(latest.status)) emit({ type: 'progress', job: forWire(latest) });
+      // 定时器回调里也要探一次 idle：最后一条进度可能刚好把队列清空
+      notifyIdle();
     }, PROGRESS_THROTTLE_MS);
     flushTimers.set(record.id, timer);
   }
@@ -199,9 +292,34 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     return queue.active + queue.pending + videoQueue.active + videoQueue.pending;
   }
 
+  /** 还没开始的工作项数量（pending 用游标存，不能用 length） */
+  function pendingCount(job: RunningJob): number {
+    return job.pending.length - job.pendingHead;
+  }
+
+  /** 取下一个待跑的工作项；消费过半时整体前移一次，摊还 O(1) */
+  function takePending(job: RunningJob): WorkItem | undefined {
+    if (job.pendingHead >= job.pending.length) return undefined;
+    const item = job.pending[job.pendingHead];
+    job.pendingHead += 1;
+    if (job.pendingHead >= 32 && job.pendingHead * 2 >= job.pending.length) {
+      job.pending.splice(0, job.pendingHead);
+      job.pendingHead = 0;
+    }
+    return item;
+  }
+
+  /** 丢掉还没开始的工作项（取消时用） */
+  function dropPending(job: RunningJob): void {
+    job.pending.length = 0;
+    job.pendingHead = 0;
+  }
+
   /**
    * 每一轮给「每个正在运行的任务」各分配一个工作项，然后让队列自己流动。
    * 轮转指针保证长任务不会因为提交顺序永远排在后面。
+   *
+   * 候选来自增量维护的 schedulable 集合，不再每轮重建 + filter 整个 running 表。
    */
   function pump(): void {
     if (pumpScheduled) return;
@@ -209,20 +327,47 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     queueMicrotask(() => {
       pumpScheduled = false;
       for (;;) {
-        const active = [...running.values()].filter(
-          (job) => !job.finalized && job.pending.length > 0 && !job.controller.signal.aborted,
-        );
-        if (active.length === 0) return;
-        // 队列已经满了：等工作项完成后再进来，避免一次性把几千张图塞进队列
+        if (schedulable.size === 0) return;
+        /**
+         * 队列已经满了：等工作项完成后再进来，避免一次性把几千张图塞进队列。
+         * 这个判断要排在遍历候选之前 —— 它是每轮都要做的，而遍历只需要在有活时做。
+         */
         if (queueLoad() >= concurrency + VIDEO_CONCURRENCY) return;
 
-        const index = roundRobin % active.length;
-        roundRobin += 1;
-        const job = active[index];
-        if (!job) return;
-        const item = job.pending.shift();
+        /**
+         * 从轮转位置开始挑一个「还有活」的任务。
+         *
+         * 只有 schedulable 集合**有变化**（有任务进来 / 有任务被移除 / 上一轮挑空了）
+         * 才需要重新落成一个数组；否则复用上一次的顺序，避免每轮都复制一遍 Set。
+         */
+        if (rotationDirty || rotationOrder.length !== schedulable.size) refreshRotation();
+        const list = rotationOrder;
+        if (list.length === 0) return;
+
+        let picked: RunningJob | undefined;
+        let offset = 0;
+        const stale: RunningJob[] = [];
+        for (let i = 0; i < list.length; i += 1) {
+          const job = list[(roundRobin + i) % list.length] as RunningJob;
+          // 已取消 / 队列已空的任务不再参与轮转（扫完再清出集合，别在遍历中改集合）
+          if (job.controller.signal.aborted || pendingCount(job) === 0) {
+            stale.push(job);
+            continue;
+          }
+          picked = job;
+          offset = i;
+          break;
+        }
+        if (stale.length > 0) {
+          for (const job of stale) schedulable.delete(job);
+          rotationDirty = true;
+        }
+        if (!picked) return;
+
+        roundRobin = (roundRobin + offset + 1) % list.length;
+        const item = takePending(picked);
         if (!item) continue;
-        dispatch(job, item);
+        dispatch(picked, item);
       }
     });
   }
@@ -276,14 +421,21 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   function maybeFinalize(job: RunningJob): void {
     if (job.finalized) return;
     if (job.inFlight > 0) return;
-    if (job.pending.length > 0) return;
+    if (pendingCount(job) > 0) return;
     job.finalized = true;
-    running.delete(job.record.id);
-    void finalizeJob(job);
+    void finalizeTracked(job);
   }
 
-  /** 任务上下文：JobTypeDef 的 run/finalize 都要求带上 extra（功能自己准备的数据，§6.4） */
+  /**
+   * 任务上下文：JobTypeDef 的 run/finalize 都要求带上 extra（功能自己准备的数据，§6.4）。
+   *
+   * 每个工作项都会调一次，所以 scope logger 缓存在任务上：
+   * log.scope() 每次新建一个带 5 个闭包的对象，500 张图就是 500 个一次性对象。
+   * 其它字段仍然每次现取 —— gateway 是可以在运行中被 setGateway/setSink 换掉的，
+   * 缓存整个上下文会让切换写入层之后的任务还往旧 sink 里写。
+   */
   function runContextFor(job: RunningJob): RunContext & { extra: unknown } {
+    job.scopedLog ??= log.scope(job.def.type);
     return {
       signal: job.controller.signal,
       fs: gateway,
@@ -292,7 +444,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         toJpeg: (blob: Blob) => media.toJpeg(blob),
         sniff: (head: Uint8Array) => sniff(head),
       },
-      log: log.scope(job.def.type),
+      log: job.scopedLog,
       extra: job.extra,
     };
   }
@@ -326,7 +478,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
 
     if (job.controller.signal.aborted) {
       job.finalized = true;
-      running.delete(job.record.id);
+      removeRunning(job);
       publish(markEnded(job.record, 'canceled', now()), true);
       scheduler.finish(job.record.id);
       return;
@@ -334,14 +486,15 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
 
     job.items = items;
     job.pending = [...items];
+    job.pendingHead = 0;
+    markSchedulable(job);
     job.record = markStarted(job.record, items, now());
     job.lastSent = signature(job.record);
     publish(job.record, true);
 
     if (items.length === 0) {
       job.finalized = true;
-      running.delete(job.record.id);
-      await finalizeJob(job);
+      await finalizeTracked(job);
       return;
     }
     pump();
@@ -350,7 +503,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   /** 计划阶段就失败：整个任务标 failed（§6.4） */
   function finishWithFailure(job: RunningJob, code: ErrorCode): void {
     job.finalized = true;
-    running.delete(job.record.id);
+    removeRunning(job);
     publish(
       markEnded(
         { ...job.record, status: 'running', failed: [{ itemKey: '', code }] },
@@ -393,13 +546,31 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     scheduler.finish(record.id);
   }
 
+  /**
+   * finalizeJob 的包装：让 idle() 能等到 .ecbox.json 真的写完。
+   * 先 +1 再从 running 里摘掉，摘掉时 notifyIdle() 看到的就不是「空」；
+   * 否则 idle() 会在 finalize 还没跑的时候先返回，调用方读到的清单是旧的。
+   */
+  async function finalizeTracked(job: RunningJob): Promise<void> {
+    finalizing += 1;
+    removeRunning(job);
+    try {
+      await finalizeJob(job);
+    } finally {
+      finalizing -= 1;
+      notifyIdle();
+    }
+  }
+
   function cancelInternal(jobId: string): void {
     const job = running.get(jobId);
     if (job) {
       job.controller.abort();
       // 已经排队但还没开跑的工作项直接丢弃，不必等它们
-      job.pending.length = 0;
+      dropPending(job);
       maybeFinalize(job);
+      // 队列里可能还压着这个任务的工作项：唤醒调度，让别的任务接手
+      pump();
       return;
     }
     const record = jobs.get(jobId);
@@ -438,7 +609,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     const submitted = scheduler.submit(record);
     if (submitted.kind === 'duplicate') {
       // 同一商品已经在下载：把已有任务的进度直接推给 UI（§6.4）
-      emit({ type: 'progress', job: submitted.existing });
+      emit({ type: 'progress', job: forWire(submitted.existing) });
       return;
     }
 
@@ -448,6 +619,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       payload: parsed,
       items: [],
       pending: [],
+      pendingHead: 0,
       inFlight: 0,
       results: new Map(),
       controller: new AbortController(),
@@ -455,9 +627,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       lastSent: '',
       finalized: false,
     };
-    running.set(record.id, job);
+    addRunning(job);
     jobs.set(record.id, record);
-    emit({ type: 'progress', job: record });
+    emit({ type: 'progress', job: forWire(record) });
 
     try {
       await startJob(job);
@@ -559,10 +731,18 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       gateway = next;
     },
 
+    /**
+     * 等所有任务跑完（测试用）。
+     *
+     * 旧实现是 setTimeout(..., 5) 死循环轮询：一个 200 项的任务要空转几百次定时器，
+     * 既拖慢单测，又让「到底跑完没有」永远有一拍延迟。现在改成等待者队列：
+     * 任务从 running 移除、或 finalize 结束时由 notifyIdle() 唤醒一次，零空转。
+     */
     async idle(): Promise<void> {
-      for (;;) {
-        if (running.size === 0 && queueLoad() === 0) return;
-        await new Promise((resolve) => setTimeout(resolve, 5));
+      while (!isIdle()) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        idleWaiters.push(resolve);
+        await promise;
       }
     },
   };

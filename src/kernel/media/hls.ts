@@ -29,9 +29,27 @@ export interface HlsPlaylist {
   unsupported?: string;
 }
 
+const BANDWIDTH_RE = /BANDWIDTH=(\d+)/i;
+const RESOLUTION_RE = /RESOLUTION=(\d+)x(\d+)/i;
+const MAP_ATTR_RE = /URI="([^"]+)"/i;
+
+/** 标记「下一行是变体地址」。带宽可以缺省（0），但绝不能靠「有没有带宽」来判断 */
+interface PendingVariant {
+  bandwidth: number;
+  width?: number;
+  height?: number;
+}
+
 /**
  * 解析 m3u8 文本。
  * baseUrl 用来把相对路径拼成绝对地址（分片地址基本都是相对的）。
+ *
+ * 几个真实边界（不是理论值）：
+ *   · #EXT-X-STREAM-INF 后面紧跟的是变体地址，但**带宽/RESOLUTION 都可能缺省**
+ *     —— 旧实现用「pendingBandwidth > 0」判断，带宽缺省时会把变体地址当成分片下载；
+ *   · #EXT-X-MAP:URI="init.mp4" 表示分片是 fMP4，必须把 init 段写在最前面，
+ *     否则拼出来的 .ts/.mp4 播不了（旧实现直接丢弃，用户拿到一个打不开的文件）；
+ *   · 变体行和分片行可能混排（主列表里再嵌一段变体），用 pending 状态机才不会串。
  */
 export function parseM3u8(text: string, baseUrl: string): HlsPlaylist {
   const lines = text.split(/\r?\n/);
@@ -39,9 +57,7 @@ export function parseM3u8(text: string, baseUrl: string): HlsPlaylist {
   const segments: string[] = [];
   let encrypted = false;
   let unsupported: string | undefined;
-  let pendingBandwidth = 0;
-  let pendingWidth: number | undefined;
-  let pendingHeight: number | undefined;
+  let pending: PendingVariant | null = null;
 
   const resolve = (uri: string): string => {
     try {
@@ -62,27 +78,35 @@ export function parseM3u8(text: string, baseUrl: string): HlsPlaylist {
       unsupported = 'encrypted';
       continue;
     }
+    if (line.startsWith('#EXT-X-MAP')) {
+      // fMP4 的初始化段：没有它，后面的分片是裸数据，播放器打不开
+      const uri = MAP_ATTR_RE.exec(line)?.[1];
+      if (uri !== undefined && uri !== '') {
+        // 初始化段出现在第一个分片之前，所以直接按出现顺序追加就是最前面
+        // （§9.9 顺序写同一个文件；类型注释里已明确 #EXT-X-MAP 不算 unsupported）
+        segments.push(resolve(uri));
+      }
+      continue;
+    }
     if (line.startsWith('#EXT-X-STREAM-INF')) {
-      const bandwidth = /BANDWIDTH=(\d+)/i.exec(line);
-      pendingBandwidth = bandwidth ? Number(bandwidth[1]) : 0;
-      const resolution = /RESOLUTION=(\d+)x(\d+)/i.exec(line);
+      const bandwidth = BANDWIDTH_RE.exec(line);
+      const resolution = RESOLUTION_RE.exec(line);
+      pending = { bandwidth: bandwidth ? Number(bandwidth[1]) : 0 };
       if (resolution) {
-        pendingWidth = Number(resolution[1]);
-        pendingHeight = Number(resolution[2]);
+        pending.width = Number(resolution[1]);
+        pending.height = Number(resolution[2]);
       }
       continue;
     }
     if (line.startsWith('#')) continue;
 
-    // 非注释行：要么是变体地址，要么是分片地址
-    if (pendingBandwidth > 0 || pendingWidth !== undefined || pendingHeight !== undefined) {
-      const variant: HlsVariant = { uri: resolve(line), bandwidth: pendingBandwidth };
-      if (pendingWidth !== undefined) variant.width = pendingWidth;
-      if (pendingHeight !== undefined) variant.height = pendingHeight;
+    // 非注释行：紧跟在 #EXT-X-STREAM-INF 后面就是变体地址，否则是分片
+    if (pending) {
+      const variant: HlsVariant = { uri: resolve(line), bandwidth: pending.bandwidth };
+      if (pending.width !== undefined) variant.width = pending.width;
+      if (pending.height !== undefined) variant.height = pending.height;
       variants.push(variant);
-      pendingBandwidth = 0;
-      pendingWidth = undefined;
-      pendingHeight = undefined;
+      pending = null;
       continue;
     }
     segments.push(resolve(line));
@@ -169,14 +193,26 @@ export async function downloadHls(
     const segmentUrl = segments[i];
     if (!segmentUrl) continue;
     const stream = await options.fetchSegment(segmentUrl);
-    const reader = stream.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      bytes += value.byteLength;
-      // 按顺序追加写入同一个文件（§9.9）
-      await options.write(value);
+    /**
+     * 用官方 pipeTo + WritableStream 代替手写 reader 泵：取消信号直接传给 pipeTo，
+     * 用户中途取消时分片流会被正确 abort（旧实现在 while(read) 里只检查了段边界，
+     * 一个几十 MB 的分片要等整个读完才发现被取消）。
+     */
+    try {
+      await stream.pipeTo(
+        new WritableStream<Uint8Array>({
+          write: async (value) => {
+            bytes += value.byteLength;
+            // 按顺序追加写入同一个文件（§9.9）
+            await options.write(value);
+          },
+        }),
+        { signal: options.signal },
+      );
+    } catch (e) {
+      // pipeTo 被取消时抛的是 DOMException AbortError；统一成 EcError，调用方只认错误码
+      if (options.signal.aborted) throw new EcError('CANCELED');
+      throw e;
     }
     options.onSegment?.(i + 1, segments.length);
   }

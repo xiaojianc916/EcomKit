@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig } from 'wxt';
-import { generate, type BuildManifest } from './scripts/gen-registries';
+import { type BuildManifest, generate } from './scripts/gen-registries';
 
 /**
  * manifest 的 matches / host_permissions / commands 全部由平台层和功能层的
@@ -20,7 +20,9 @@ const build = loadBuildManifest();
 const PLATFORM_MATCHES = [
   ...new Set(build.platforms.flatMap((p) => p.pageKinds.flatMap((k) => k.matches))),
 ];
-const CDN_HOSTS = [...new Set(build.platforms.flatMap((p) => p.cdnHosts.map((h) => `https://${h}/`)))];
+const CDN_HOSTS = [
+  ...new Set(build.platforms.flatMap((p) => p.cdnHosts.map((h) => `https://${h}/`))),
+];
 const REFERER_HOSTS = [
   ...new Set(build.platforms.flatMap((p) => p.referer?.hosts ?? []).map((h) => `https://${h}/`)),
 ];
@@ -34,12 +36,7 @@ export default defineConfig({
     // 固定扩展 ID：公钥来自 scripts/gen-key.ts，私钥不入库（§14）
     ...(process.env.ECBOX_PUBLIC_KEY ? { key: process.env.ECBOX_PUBLIC_KEY } : {}),
     minimum_chrome_version: '122',
-    permissions: [
-      'storage',
-      'offscreen',
-      'downloads',
-      'declarativeNetRequestWithHostAccess',
-    ],
+    permissions: ['storage', 'offscreen', 'downloads', 'declarativeNetRequestWithHostAccess'],
     host_permissions: [...PLATFORM_MATCHES, ...CDN_HOSTS, ...REFERER_HOSTS],
     action: { default_title: '电商素材工具箱' },
     commands: {

@@ -106,9 +106,19 @@ const SENSITIVE_KEYS = [
   'avatar',
 ];
 
+/**
+ * 归一化后的敏感字段名集合（去掉大小写和 -/_ 干扰）。
+ *
+ * 预先构造一次：toSkeleton 会对**每个字段**调用 isSensitiveKey，
+ * 原实现每次都在 22 项数组上做 `.some()` + 每一项再跑一遍正则 replace，
+ * 一份几 MB 的抓包骨架有上千个字段，等于上万次字符串重建。
+ */
+const SENSITIVE_KEY_SET: ReadonlySet<string> = new Set(
+  SENSITIVE_KEYS.map((sensitive) => sensitive.replace(/[-_]/g, '')),
+);
+
 export function isSensitiveKey(key: string): boolean {
-  const lowered = key.toLowerCase().replace(/[-_]/g, '');
-  return SENSITIVE_KEYS.some((sensitive) => lowered === sensitive.replace(/[-_]/g, ''));
+  return SENSITIVE_KEY_SET.has(key.toLowerCase().replace(/[-_]/g, ''));
 }
 
 /**

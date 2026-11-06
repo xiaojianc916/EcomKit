@@ -122,6 +122,63 @@ describe('readHead', () => {
     expect(new Uint8Array(merged)).toEqual(data);
   });
 
+  it('首块远大于 32 字节时，rest 是完整 body 且不拷贝首块', async () => {
+    const big = new Uint8Array(64 * 1024);
+    big.set([0xff, 0xd8, 0xff, 0xe0]);
+    for (let i = 4; i < big.length; i += 1) big[i] = i & 0xff;
+    const first = big.slice();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(first);
+        controller.close();
+      },
+    });
+
+    const { head, rest } = await readHead(stream, 32);
+    expect(head.length).toBe(32);
+    expect(sniff(head).ext).toBe('jpg');
+
+    const merged = new Uint8Array(await new Response(rest).arrayBuffer());
+    // 契约：rest 是**完整内容**，一个字节都不能少（少 32 字节 = 落盘文件损坏）
+    expect(merged.byteLength).toBe(big.byteLength);
+    expect(merged).toEqual(big);
+  });
+
+  it('首块不足 32 字节时跨块拼出 head，rest 仍从第 0 个字节开始', async () => {
+    const data = new Uint8Array(100);
+    data.set([0xff, 0xd8, 0xff, 0xe0]);
+    for (let i = 4; i < data.length; i += 1) data[i] = i & 0xff;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < data.length; i += 7) {
+          controller.enqueue(data.slice(i, Math.min(i + 7, data.length)));
+        }
+        controller.close();
+      },
+    });
+
+    const { head, rest } = await readHead(stream, 32);
+    expect(head.length).toBe(32);
+    expect(sniff(head).ext).toBe('jpg');
+
+    const merged = new Uint8Array(await new Response(rest).arrayBuffer());
+    expect(merged).toEqual(data);
+  });
+
+  it('短于 32 字节的响应：head 取全部，rest 仍然把它接回去', async () => {
+    const data = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00]);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(data.slice());
+        controller.close();
+      },
+    });
+    const { head, rest } = await readHead(stream, 32);
+    expect(head.length).toBe(5);
+    const merged = new Uint8Array(await new Response(rest).arrayBuffer());
+    expect(merged).toEqual(data);
+  });
+
   it('body 为 null 时返回空头', async () => {
     const { head, rest } = await readHead(null);
     expect(head.length).toBe(0);

@@ -20,8 +20,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -50,7 +50,10 @@ const BROWSERS = {
 };
 
 const cfg = BROWSERS[browser];
-if (!cfg) fail('用法: node scripts/install-extension.mjs <chrome|edge> [--ext <path>] [--profile <dir>] [--keep-open]');
+if (!cfg)
+  fail(
+    '用法: node scripts/install-extension.mjs <chrome|edge> [--ext <path>] [--profile <dir>] [--keep-open]',
+  );
 
 const exe = existsSync(cfg.exe) ? cfg.exe : existsSync(cfg.exeAlt) ? cfg.exeAlt : null;
 if (!exe) fail('找不到 ' + browser + ' 的可执行文件');
@@ -59,34 +62,24 @@ if (!existsSync(join(extPath, 'manifest.json'))) fail('扩展目录里没有 man
 mkdirSync(profileDir, { recursive: true });
 
 // 检测这个 profile 是不是正在被占用 —— 占用时浏览器会直接退出，报错很难懂
-/** 从 basePort 往上找一个没人监听的端口 */
-async function findFreePort(basePort) {
-  const busy = new Set(
-    (await import('node:child_process')).execSync('netstat -ano -p tcp', { encoding: 'utf8' })
-      .split('\n')
-      .filter((l) => l.includes('LISTENING'))
-      .map((l) => Number(l.trim().split(/\s+/)[1]?.split(':').pop()))
-      .filter(Number.isFinite),
-  );
-  for (let p = basePort; p < basePort + 50; p++) {
-    if (!busy.has(p)) return p;
-  }
-  return basePort;
-}
-
-const running = spawnSync('powershell', [
-  '-NoProfile',
-  '-Command',
-  `Get-CimInstance Win32_Process -Filter "Name='chrome.exe' OR Name='msedge.exe'" |
+const running = spawnSync(
+  'powershell',
+  [
+    '-NoProfile',
+    '-Command',
+    `Get-CimInstance Win32_Process -Filter "Name='chrome.exe' OR Name='msedge.exe'" |
      Where-Object { $_.CommandLine -notlike '*--type=*' } |
      ForEach-Object { $_.CommandLine }`,
-], { encoding: 'utf8' });
+  ],
+  { encoding: 'utf8' },
+);
 
 const cmdlines = (running.stdout ?? '').split('\n').filter(Boolean);
 const normalizedProfile = profileDir.replace(/\\/g, '\\');
 const isDefaultProfile = /User Data\s*$/i.test(profileDir);
 const occupied = isDefaultProfile
-  ? cmdlines.some((c) => !/--user-data-dir=/.test(c)) || cmdlines.some((c) => c.includes('User Data'))
+  ? cmdlines.some((c) => !/--user-data-dir=/.test(c)) ||
+    cmdlines.some((c) => c.includes('User Data'))
   : cmdlines.some((c) => c.includes(normalizedProfile));
 
 if (occupied) {
@@ -109,14 +102,18 @@ console.log('浏览器  :', exe);
 console.log('扩展目录:', extPath);
 console.log('profile :', profileDir);
 
-const child = spawn(exe, [
-  '--user-data-dir=' + profileDir,
-  '--remote-debugging-port=' + cfg.port,
-  '--enable-unsafe-extension-debugging',
-  '--no-first-run',
-  '--no-default-browser-check',
-  'about:blank',
-], { detached: true, stdio: 'ignore' });
+const child = spawn(
+  exe,
+  [
+    '--user-data-dir=' + profileDir,
+    '--remote-debugging-port=' + cfg.port,
+    '--enable-unsafe-extension-debugging',
+    '--no-first-run',
+    '--no-default-browser-check',
+    'about:blank',
+  ],
+  { detached: true, stdio: 'ignore' },
+);
 child.unref();
 
 // 等 CDP 就绪

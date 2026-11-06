@@ -43,7 +43,7 @@ function makeFsaRoot(): { root: FileSystemDirectoryHandle; snapshot: () => strin
     let node = rootNode;
     for (const seg of path) {
       const next = node.children?.get(seg.toLowerCase());
-      if (!next || next.kind !== 'directory') {
+      if (next?.kind !== 'directory') {
         throw new DOMException('missing', 'NotFoundError');
       }
       node = next;
@@ -272,6 +272,50 @@ describe('FSA 写入层（用户实际使用的保存方式）', () => {
     expect(runner.get('j2')?.skipped).toBe(3);
     expect(tree()).toEqual(before);
     expect(tree().some((f) => f.includes('(2)'))).toBe(false);
+  });
+
+  it('同一批次连续写多个文件：每张图都写进对应子目录，不互相覆盖', async () => {
+    const { root, snapshot } = makeFsaRoot();
+    let dirLookups = 0;
+    // 统计 getDirectoryHandle 调用次数：路径缓存生效时，同一目录在一批写入里只解析一次
+    const counting = new Proxy(root, {
+      get(target, prop, receiver) {
+        if (prop === 'getDirectoryHandle') {
+          return (name: string, opts?: { create?: boolean }) => {
+            dirLookups += 1;
+            return (target as FileSystemDirectoryHandle).getDirectoryHandle(name, opts);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as FileSystemDirectoryHandle;
+    const sink = createFsaSink({ loadRoot: async () => counting });
+    const signal = new AbortController().signal;
+    for (let i = 0; i < 8; i += 1) {
+      await sink.ensureDir(['拼多多', '商品_1', '详情图']);
+      const name = await sink.resolveName(['拼多多', '商品_1', '详情图'], String(i), 'png');
+      await sink.writeFile(['拼多多', '商品_1', '详情图'], name, new Blob([PNG]), signal);
+    }
+    const names = snapshot().map((f) => f.split(' [')[0] ?? '');
+    expect(names.filter((f) => f.includes('/详情图/'))).toHaveLength(8);
+    // 只有第一次需要从根目录往下解析；后面 7 个文件全部命中路径缓存
+    expect(dirLookups).toBeLessThanOrEqual(1);
+  });
+
+  it('目录被外部删掉后，后续写入按原路径重建（不把旧句柄当活句柄）', async () => {
+    const { root } = makeFsaRoot();
+    const sink = createFsaSink({ loadRoot: async () => root });
+    const signal = new AbortController().signal;
+    await sink.ensureDir(['拼多多', '商品_1']);
+    await sink.writeFile(['拼多多', '商品_1'], 'a.txt', new Blob(['x']), signal);
+    // 用户（或同步盘）把整个商品目录删掉
+    const platform = await root.getDirectoryHandle('拼多多');
+    await platform.removeEntry('商品_1');
+    // 缓存里那个句柄已经指向被删掉的目录：必须自动清缓存、按原路径重建，而不是一直失败
+    const result = await sink.writeFile(['拼多多', '商品_1'], 'b.txt', new Blob(['y']), signal);
+    expect(result.name).toBe('b.txt');
+    // 用 sink 自己读回（snapshot 只认得最初那个 rootNode，看不到重建出来的节点）
+    expect(await sink.exists(['拼多多', '商品_1'], 'b.txt')).toBe(1);
   });
 
   it('写入中断（abort）不留半截文件（§9.10）', async () => {

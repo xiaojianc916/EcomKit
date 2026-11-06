@@ -25,9 +25,16 @@ import { PortalRoot } from '../../kernel/ui-kit/PortalRoot';
 import { PLATFORM_MATCHES } from '../../platforms/registry';
 import { Shell } from '../../shell/Shell';
 import { createPageController, type PageController } from './controller';
-import { createPageApi } from './page-api';
+import { createPageApi, setActiveFeatureId } from './page-api';
 
 const log = createLogger('page');
+
+/**
+ * 等站点/功能偏好落地的上限。超时就用默认勾选继续启动 ——
+ * 偏好读的是一份几十字节的 JSON，正常是毫秒级；卡住说明 storage 本身有问题，
+ * 这时候「工具箱照常可用、只是勾选回到默认」远好过「什么都不出现」。
+ */
+const PREFS_WAIT_MS = 1500;
 
 /**
  * 订阅 controller 的状态版本号，每次 notify 都用最新状态重算 props。
@@ -48,15 +55,14 @@ export default defineContentScript({
 
   async main(ctx) {
     const controller = createPageController(ctx);
-    const api = createPageApi(controller);
+    const handle = createPageApi(controller);
+    const { api } = handle;
     // PageApi.toast 的落点：没有这一行，页面侧所有"告诉用户发生了什么"的提示都只是内存里的一句话
-    type ToastHandler = (msg: string, opts?: { action?: { label: string; run(): void } }) => void;
-    (api as unknown as { __setToastHandler(h: ToastHandler): void }).__setToastHandler(
-      (msg, opts) => showToast(msg, opts?.action),
-    );
+    handle.setToastHandler((msg, opts) => showToast(msg, opts?.action));
 
     // 快捷键 / popup / 工具栏命令（bg 和 popup 都用 chrome.tabs.sendMessage 发这个）。
     // 旧实现完全没监听：Alt+Shift+D 和 popup 的「下载」都是死键。
+    // 监听要在 await 之前注册 —— 用户完全可能在内容脚本还没走完初始化的那几毫秒按下快捷键。
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg?.type !== 'ecbox:command') return false;
       const id = typeof msg.command === 'string' ? msg.command : '';
@@ -66,6 +72,16 @@ export default defineContentScript({
         .catch(() => sendResponse({ ok: false }));
       return true; // 异步应答
     });
+
+    // 面板的功能 store 在首次渲染时就用 prefs 初始化勾选状态，所以要等偏好读回来再启动。
+    // 读的是 chrome.storage.local（几毫秒），远早于快照识别完成，用户感知不到这段等待。
+    //
+    // **必须带超时**：storage 在某些企业策略/隐私模式下会一直挂起而不报错，
+    // 无上限地 await 会把整个工具箱卡在「什么都没出现」——比丢勾选状态严重得多。
+    await Promise.race([
+      handle.prefsHydrated,
+      new Promise<void>((resolve) => setTimeout(resolve, PREFS_WAIT_MS)),
+    ]);
 
     let ui: Awaited<ReturnType<typeof createShadowRootUi>> | null = null;
     let root: Root | null = null;
@@ -106,7 +122,14 @@ export default defineContentScript({
       ui?.remove();
       ui = null;
     };
-    ctx.onInvalidated(() => controller.dispose());
+    ctx.onInvalidated(() => {
+      // 顺序有讲究：先停 controller（它可能正在发消息），再断 API 的 Port 和偏好监听，
+      // 否则扩展被禁用/更新时这两处会在失效上下文里继续发消息，控制台刷一堆
+      // "Extension context invalidated"。
+      controller.dispose();
+      handle.dispose();
+      setActiveFeatureId(null);
+    });
 
     controller.onMatched(() => {
       void mount();

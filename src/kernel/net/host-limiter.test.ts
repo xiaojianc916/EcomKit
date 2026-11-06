@@ -23,6 +23,25 @@ describe('normalizeHost / hostOf', () => {
   });
 });
 
+describe('normalizeHost 缓存与端口处理', () => {
+  it('带端口/大写都归一到同一个桶', () => {
+    expect(normalizeHost('CDN.Example.com:8443')).toBe('cdn.example.com');
+    expect(normalizeHost('cdn.example.com')).toBe('cdn.example.com');
+    expect(normalizeHost('  cdn.example.com  ')).toBe('cdn.example.com');
+  });
+
+  it('IPv6 字面量和冒号结尾不被误切', () => {
+    expect(normalizeHost('[::1]')).toBe('[::1]');
+    expect(normalizeHost('example.com:')).toBe('example.com:');
+  });
+
+  it('反复调用结果稳定（走了缓存）', () => {
+    for (let i = 0; i < 5; i += 1) {
+      expect(normalizeHost('Img.PDDpic.com:443')).toBe('img.pddpic.com');
+    }
+  });
+});
+
 describe('createHostLimiter（§6.4 同域名 ≤4）', () => {
   it('同域名并发不超过 4', async () => {
     const limiter = createHostLimiter();
@@ -79,6 +98,45 @@ describe('createHostLimiter（§6.4 同域名 ≤4）', () => {
     await limiter.run('a.com', async () => {});
     expect(limiter.active('a.com')).toBe(0);
     expect(limiter.waiting('a.com')).toBe(0);
+  });
+
+  it('名额直接转交，新来的 run 不会插队到 limit+1', async () => {
+    const limiter = createHostLimiter(1);
+    const gates = [deferred(), deferred()];
+    const first = limiter.run('a.com', () => gates[0]!.promise);
+    let secondRunning = false;
+    const second = limiter.run('a.com', async () => {
+      secondRunning = true;
+    });
+    await Promise.resolve();
+    expect(limiter.active('a.com')).toBe(1);
+    expect(limiter.waiting('a.com')).toBe(1);
+
+    // 第一个结束的同一时刻再进来一个：名额要转交给排队的那个，不能两个都跑
+    gates[0]!.resolve();
+    await Promise.resolve();
+    const third = limiter.run('a.com', async () => {});
+    await Promise.all([first, second, third]);
+    expect(secondRunning).toBe(true);
+    expect(limiter.active('a.com')).toBe(0);
+  });
+
+  it('大量排队（几百张图）时队列不退化', async () => {
+    const limiter = createHostLimiter(2);
+    let peak = 0;
+    let running = 0;
+    const tasks = Array.from({ length: 300 }, () =>
+      limiter.run('cdn.example.com', async () => {
+        running += 1;
+        peak = Math.max(peak, running);
+        await Promise.resolve();
+        running -= 1;
+      }),
+    );
+    await Promise.all(tasks);
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(limiter.active('cdn.example.com')).toBe(0);
+    expect(limiter.waiting('cdn.example.com')).toBe(0);
   });
 
   it('reset 后排队任务被放行', async () => {

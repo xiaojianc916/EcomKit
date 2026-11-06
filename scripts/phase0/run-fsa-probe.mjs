@@ -64,7 +64,10 @@ if (!extId) {
 
 if (!extId) {
   console.log('ALL LOGS:', JSON.stringify(logs.slice(-40), null, 2));
-  writeFileSync(join(outDir, 'fsa-probe-result.json'), JSON.stringify({ error: 'no ext id', logs }, null, 2));
+  writeFileSync(
+    join(outDir, 'fsa-probe-result.json'),
+    JSON.stringify({ error: 'no ext id', logs }, null, 2),
+  );
   await context.close();
   process.exit(1);
 }
@@ -97,9 +100,25 @@ const offscreenLogs = logs.filter((l) => /OFFSCREEN/.test(l.text));
 
 writeFileSync(
   join(outDir, 'fsa-probe-result.json'),
-  JSON.stringify({ extId, parsed, offscreenPages: offscreenPages.map((p) => p.url()), offscreenLogs, logs: logs.slice(-80) }, null, 2),
+  JSON.stringify(
+    {
+      extId,
+      parsed,
+      offscreenPages: offscreenPages.map((p) => p.url()),
+      offscreenLogs,
+      logs: logs.slice(-80),
+    },
+    null,
+    2,
+  ),
   'utf8',
 );
 
-console.log(JSON.stringify({ extId, parsed, offscreenPageUrls: offscreenPages.map((p) => p.url()), offscreenLogs }, null, 2));
+console.log(
+  JSON.stringify(
+    { extId, parsed, offscreenPageUrls: offscreenPages.map((p) => p.url()), offscreenLogs },
+    null,
+    2,
+  ),
+);
 await context.close();

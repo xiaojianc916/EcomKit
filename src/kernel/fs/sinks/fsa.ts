@@ -1,6 +1,6 @@
 import { EcError } from '../../errors/ec-error';
 import type { Logger } from '../../log/logger';
-import { nameKey, sanitizeName } from '../../naming/sanitize';
+import { NAME_LIMITS, nameKey, sanitizeName } from '../../naming/sanitize';
 import { uniqueFileName } from '../../naming/unique';
 import { checkDirStatus, probeFromHandle } from '../dir-status';
 import { mapFsError } from '../fs-errors';
@@ -20,15 +20,48 @@ import type { DirEntry, DirState, FsSink, RelPath, WriteResult } from '../types'
 
 const SWAP_EXT = '.crswap';
 
+/**
+ * 目录名字列表的缓存时长。
+ *
+ * 为什么缓存：resolveName 原来每写一个文件就把整个目录列一遍（一个商品几十张详情图就是 O(n²)），
+ * 而列举目录要把每个目录项都变成 FileSystemHandle，比字符串比较贵得多。
+ * 缓存期间由我们自己分配的名字会**即时写回**集合，所以同一批次内的判定结果和每次重列一致；
+ * TTL 只兜一种情况：用户在外面往这个目录里手工放了同名文件。
+ */
+const NAME_CACHE_TTL_MS = 3000;
+/** 缓存的目录数上限：几百个商品目录过去后把最早的挤掉，避免长会话里无限增长 */
+const MAX_CACHED_DIRS = 256;
+
 export interface FsaSinkOptions {
   /** 取根句柄；默认从 IndexedDB 读（§6.5）。单测里注入假句柄 */
   loadRoot?: () => Promise<FileSystemDirectoryHandle | null>;
   log?: Logger;
 }
 
+/** 目录缓存的键：按清洗后真正落盘的名字拼，'主/图' 和 '主／图' 是同一个目录 */
+function dirKey(path: RelPath): string {
+  return path.map((segment) => nameKey(sanitizeName(segment))).join('/');
+}
+
 export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
   const loadRoot = opts.loadRoot ?? (() => loadRootHandle());
   let cached: FileSystemDirectoryHandle | null = null;
+  /** 路径 → 目录句柄。存 Promise 而不是结果：并发调用共用同一次逐级解析 */
+  const dirs = new Map<string, Promise<FileSystemDirectoryHandle>>();
+  /** 路径 → 该目录下的文件名（已经是 nameKey 形式，比较一律大小写不敏感，§9.2） */
+  const nameLists = new Map<string, { names: Set<string>; at: number }>();
+
+  function clearCache(): void {
+    dirs.clear();
+    nameLists.clear();
+  }
+
+  /** 统一异常映射：目录没了/没授权就顺手清缓存，避免继续拿着死句柄 */
+  function fsError(e: unknown): EcError {
+    const mapped = mapFsError(e);
+    if (mapped.code === 'DIR_GONE' || mapped.code === 'DIR_UNSET') clearCache();
+    return mapped;
+  }
 
   async function root(): Promise<FileSystemDirectoryHandle> {
     if (cached) return cached;
@@ -38,20 +71,84 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
     return handle;
   }
 
-  /** 逐级定位目录，不创建 */
+  /** 逐级定位目录；create=false 时吃缓存（写路径永远走一次真实解析） */
   async function getDir(path: RelPath, create: boolean): Promise<FileSystemDirectoryHandle> {
-    let dir = await root();
-    for (const segment of path) {
-      dir = await dir.getDirectoryHandle(sanitizeName(segment), { create });
+    const key = dirKey(path);
+    if (!create) {
+      const hit = dirs.get(key);
+      if (hit) return hit;
     }
-    return dir;
+    const pending = (async () => {
+      let dir = await root();
+      for (const segment of path) {
+        dir = await dir.getDirectoryHandle(sanitizeName(segment), { create });
+      }
+      return dir;
+    })();
+    // 长会话里商品目录会越来越多，超出上限就挤掉最早的那个（只是缓存，丢了大不了重新解析）
+    if (!dirs.has(key) && dirs.size >= MAX_CACHED_DIRS) {
+      const oldest = dirs.keys().next();
+      if (!oldest.done) dirs.delete(oldest.value);
+    }
+    dirs.delete(key);
+    dirs.set(key, pending);
+    // 解析失败要把缓存摘掉：否则后面所有读操作都会拿到同一个已失败的 Promise
+    pending.catch(() => {
+      if (dirs.get(key) === pending) dirs.delete(key);
+    });
+    return pending;
+  }
+
+  /**
+   * 写路径的目录句柄：先吃缓存（一个商品几十个文件，每次都从根逐级 getDirectoryHandle 是白花），
+   * 缓存里没有时再逐级创建。
+   */
+  async function dirForWrite(path: RelPath): Promise<FileSystemDirectoryHandle> {
+    const hit = dirs.get(dirKey(path));
+    if (hit) {
+      const handle = await hit.catch(() => null);
+      if (handle) return handle;
+    }
+    return getDir(path, true);
+  }
+
+  /**
+   * 目录级操作：先吃缓存句柄；句柄已指向被删除/改名的目录（NotFoundError）时清缓存、
+   * 逐级重建后重试一次。用户在资源管理器里删/改商品文件夹是真实场景（§9.4）。
+   */
+  async function withDir<T>(
+    path: RelPath,
+    run: (dirHandle: FileSystemDirectoryHandle) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await run(await dirForWrite(path));
+    } catch (e) {
+      if (mapFsError(e).code !== 'DIR_GONE') throw e;
+      clearCache();
+      return run(await getDir(path, true));
+    }
+  }
+
+  /** 目录里的文件名集合（nameKey 形式），按 TTL 缓存 */
+  async function dirNames(dirHandle: FileSystemDirectoryHandle, key: string): Promise<Set<string>> {
+    const hit = nameLists.get(key);
+    if (hit && Date.now() - hit.at < NAME_CACHE_TTL_MS) return hit.names;
+    const names = new Set<string>();
+    for await (const [name] of iterateEntries(dirHandle)) names.add(nameKey(name));
+    if (!nameLists.has(key) && nameLists.size >= MAX_CACHED_DIRS) {
+      const oldest = nameLists.keys().next();
+      if (!oldest.done) nameLists.delete(oldest.value);
+    }
+    nameLists.delete(key);
+    nameLists.set(key, { names, at: Date.now() });
+    return names;
   }
 
   return {
     kind: 'fsa',
 
     async status(): Promise<DirState> {
-      return checkDirStatus(
+      const state = await checkDirStatus(
         async () => {
           const handle = await loadRoot();
           cached = handle;
@@ -59,10 +156,15 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
         },
         async () => (await loadRoot())?.name ?? null,
       );
+      // 目录被删/换掉之后，缓存里的句柄和名字列表都不能再用（§9.4）
+      if (state.status !== 'ready') clearCache();
+      return state;
     },
 
     async refresh(): Promise<DirState> {
+      // 授权小窗刚写完句柄，或用户在设置里切了保存方式：根句柄和路径缓存全部作废
       cached = null;
+      clearCache();
       return this.status();
     },
 
@@ -71,12 +173,22 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
       return handle?.name ?? null;
     },
 
+    /**
+     * 建目录（已存在视作成功）。
+     *
+     * 两点和旧实现不同：
+     *   · 不再每次都把根句柄缓存清掉：引擎每写一个文件都会先 ensureDir（engine.ts 写盘前调用），
+     *     原来那句 cached = null 等于每张图都重新读一次 IndexedDB；
+     *   · 路径命中缓存就直接返回：一个商品几十个文件写的是同一个子目录，
+     *     每次都从根逐级 getDirectoryHandle 是纯粹的重复 IPC。
+     * 缓存指着已删/已改名的目录时，随后那次真实写入会拿到 NotFoundError，
+     * withDir 会清缓存并逐级重建（见 withDir 的重试分支），所以这里放心走缓存。
+     */
     async ensureDir(path: RelPath): Promise<void> {
-      cached = null; // 状态可能刚被授权改变，重新读一次根句柄
       try {
-        await getDir(path, true);
+        await dirForWrite(path);
       } catch (e) {
-        throw mapFsError(e);
+        throw fsError(e);
       }
     },
 
@@ -86,12 +198,15 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
      */
     async resolveName(dir: RelPath, stem: string, ext: string): Promise<string> {
       try {
-        const dirHandle = await getDir(dir, true);
-        const names: string[] = [];
-        for await (const [name] of iterateEntries(dirHandle)) names.push(name);
-        return uniqueFileName(sanitizeName(stem, { maxLength: 40 }), ext, names);
+        const key = dirKey(dir);
+        const wanted = sanitizeName(stem, { maxLength: NAME_LIMITS.file });
+        const names = await withDir(dir, (dirHandle) => dirNames(dirHandle, key));
+        const resolved = uniqueFileName(wanted, ext, names);
+        // 记下刚分配的名字：同一批次的下一个文件不必再列一次目录
+        names.add(nameKey(resolved));
+        return resolved;
       } catch (e) {
-        throw mapFsError(e);
+        throw fsError(e);
       }
     },
 
@@ -109,8 +224,9 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
       if (signal.aborted) throw new EcError('CANCELED');
       let size = 0;
       try {
-        const dirHandle = await getDir(dir, true);
-        const fileHandle = await dirHandle.getFileHandle(name, { create: true });
+        const fileHandle = await withDir(dir, (dirHandle) =>
+          dirHandle.getFileHandle(name, { create: true }),
+        );
         const writable = await fileHandle.createWritable();
         try {
           const stream = toStream(data);
@@ -131,11 +247,11 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
         } catch (e) {
           await writable.abort().catch(() => {});
           // pipeTo 被 signal 中断时抛的是 DOMException AbortError，映射成 CANCELED
-          throw mapFsError(e);
+          throw fsError(e);
         }
         return { size, name };
       } catch (e) {
-        throw mapFsError(e);
+        throw fsError(e);
       }
     },
 
@@ -148,7 +264,7 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
       } catch (e) {
         // 文件不存在是正常情况（第一次下载），返回 null 而不是抛错
         if (e instanceof DOMException && e.name === 'NotFoundError') return null;
-        throw mapFsError(e);
+        throw fsError(e);
       }
     },
 
@@ -175,7 +291,7 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
         }
         return out;
       } catch (e) {
-        throw mapFsError(e);
+        throw fsError(e);
       }
     },
 
@@ -183,9 +299,11 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
       try {
         const dirHandle = await getDir(dir, false);
         await dirHandle.removeEntry(name);
+        // 名字列表缓存同步删掉，否则下一次 resolveName 还会给刚删掉的文件让位
+        nameLists.get(dirKey(dir))?.names.delete(nameKey(name));
       } catch (e) {
         if (e instanceof DOMException && e.name === 'NotFoundError') return;
-        throw mapFsError(e);
+        throw fsError(e);
       }
     },
 
@@ -202,11 +320,16 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
           await writable.close();
         } catch (e) {
           await writable.abort().catch(() => {});
-          throw mapFsError(e);
+          throw fsError(e);
         }
         await dirHandle.removeEntry(from);
+        const names = nameLists.get(dirKey(dir))?.names;
+        if (names) {
+          names.delete(nameKey(from));
+          names.add(nameKey(to));
+        }
       } catch (e) {
-        throw mapFsError(e);
+        throw fsError(e);
       }
     },
 
@@ -219,7 +342,7 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
         return file.size;
       } catch (e) {
         if (e instanceof DOMException && e.name === 'NotFoundError') return null;
-        throw mapFsError(e);
+        throw fsError(e);
       }
     },
   };

@@ -15,19 +15,49 @@ export function isEmptyValue(v: unknown): boolean {
   return false;
 }
 
-function readSegment(cur: unknown, segment: string): unknown {
-  const m = /^([^[\]]+)((?:\[\d+\])*)$/.exec(segment);
+/** 解析后的一个路径段：key 与数组下标（'goods[0].x' 的 'goods[0]' → key='goods', indexes=[0]） */
+interface Segment {
+  key: string;
+  indexes: readonly number[];
+}
+
+const SEGMENT_RE = /^([^[\]]+)((?:\[\d+\])*)$/;
+
+function parseSegment(segment: string): Segment | undefined {
+  const m = SEGMENT_RE.exec(segment);
   if (!m) return undefined;
   const key = m[1];
-  const idxSrc = m[2] ?? '';
   if (key === undefined) return undefined;
+  const idxSrc = m[2] ?? '';
+  return { key, indexes: idxSrc === '' ? [] : (idxSrc.match(/\d+/g) ?? []).map(Number) };
+}
+
+/**
+ * 路径解析缓存。
+ *
+ * schema 里的候选路径全是模块级常量数组（PDD_TITLE_PATHS 之类），
+ * 但 firstNonEmpty 每次调用都要对每条路径 split('.') + 每段跑一遍正则。
+ * 一次商品解析会命中几十个字段 × 每条 5~7 个候选路径，
+ * 点开一个商品页就是上千次对**同几个字符串**的重复解析。缓存后只解析一次。
+ */
+const PATH_CACHE = new Map<string, readonly (Segment | undefined)[]>();
+
+function parsePath(path: string): readonly (Segment | undefined)[] {
+  const cached = PATH_CACHE.get(path);
+  if (cached !== undefined) return cached;
+  const parsed = path.split('.').map(parseSegment);
+  PATH_CACHE.set(path, parsed);
+  return parsed;
+}
+
+function readSegment(cur: unknown, segment: Segment | undefined): unknown {
+  if (segment === undefined) return undefined;
+  const { key, indexes } = segment;
 
   let v: unknown = key === '*' ? cur : readKey(cur, key);
   if (v === undefined) return undefined;
 
-  const idxs = idxSrc.match(/\d+/g) ?? [];
-  for (const raw of idxs) {
-    const i = Number(raw);
+  for (const i of indexes) {
     if (!Array.isArray(v)) return undefined;
     v = v[i];
     if (v === undefined) return undefined;
@@ -44,7 +74,7 @@ function readKey(cur: unknown, key: string): unknown {
 export function readPath(root: unknown, path: string): unknown {
   if (root === null || root === undefined) return undefined;
   let cur: unknown = root;
-  for (const segment of path.split('.')) {
+  for (const segment of parsePath(path)) {
     cur = readSegment(cur, segment);
     if (cur === undefined) return undefined;
   }

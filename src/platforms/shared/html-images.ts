@@ -69,14 +69,35 @@ export function htmlToDetailAssets(
 }
 
 /**
+ * assetKeyFromUrl 的记忆化缓存。
+ *
+ * 这个函数在热点路径上被反复调用：DOM 兜底对页面每张 <img> 调一次（瀑布流页面几百上千张），
+ * 合并器对每个素材的每个候选调一次，deep-scan 对每个命中项调一次。
+ * 而输入基本只有几十到几百个不同的地址（详情图的多个候选往往指向同一路径）。
+ * 每次调用都要 new URL + 构造 hostname+pathname 再 toLowerCase，是纯重复计算。
+ *
+ * 用带上限的 Map 而不是 WeakMap：键是字符串。超过上限直接整体清空 ——
+ * 这个缓存只影响性能不影响正确性，不需要淘汰策略。
+ */
+const KEY_CACHE = new Map<string, string>();
+const KEY_CACHE_LIMIT = 4096;
+
+/**
  * 素材 key：地址路径去掉查询串（小写）。
  * 同一张图被平台加上不同的追踪参数时，仍然算同一个素材。
  */
 export function assetKeyFromUrl(rawUrl: string): string {
+  const cached = KEY_CACHE.get(rawUrl);
+  if (cached !== undefined) return cached;
+
+  let key: string;
   try {
     const u = new URL(rawUrl);
-    return `${u.hostname}${u.pathname}`.toLowerCase();
+    key = `${u.hostname}${u.pathname}`.toLowerCase();
   } catch {
-    return rawUrl;
+    key = rawUrl;
   }
+  if (KEY_CACHE.size >= KEY_CACHE_LIMIT) KEY_CACHE.clear();
+  KEY_CACHE.set(rawUrl, key);
+  return key;
 }

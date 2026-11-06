@@ -283,4 +283,51 @@ describe('createJobRunner（§6.4）', () => {
     const last = events.filter((e) => e.type === 'done').at(-1);
     expect(last && last.type === 'done' && last.job.byGroup.main?.total).toBe(2);
   });
+
+  it('进度事件不带 payload（跨进程克隆瘦身），任务内部记录仍保留给 retry 用', async () => {
+    const { runner, events } = setup();
+    const payload = { count: 2 };
+    await runner.enqueue(job('j1', payload), payload);
+    await runner.idle();
+
+    const withJob = events.filter((e) => e.type === 'progress' || e.type === 'done');
+    expect(withJob.length).toBeGreaterThan(0);
+    for (const e of withJob) {
+      if (e.type === 'progress' || e.type === 'done') expect(e.job.payload).toBeNull();
+    }
+    // 任务自己那份记录（retry 要用 payload）不能被瘦身
+    expect(runner.get('j1')?.payload).toEqual(payload);
+  });
+
+  it('取消正在跑的任务后 idle() 能返回，不会空转挂住', async () => {
+    const def = makeDef({
+      async run(item) {
+        await new Promise((r) => setTimeout(r, 20));
+        return { itemKey: item.itemKey, status: 'ok', bytes: 1 };
+      },
+    });
+    const { runner } = setup(def);
+    const payload = { count: 40 };
+    await runner.enqueue(job('j1', payload), payload);
+    await new Promise((r) => setTimeout(r, 5));
+    runner.cancel('j1');
+    await runner.idle();
+    expect(runner.get('j1')?.status).toBe('canceled');
+  });
+
+  it('空计划任务的 idle() 会等到 finalize 跑完', async () => {
+    const order: string[] = [];
+    const def = makeDef({
+      async finalize() {
+        await new Promise((r) => setTimeout(r, 5));
+        order.push('finalize');
+      },
+    });
+    const { runner } = setup(def);
+    const payload = { count: 0 };
+    await runner.enqueue(job('j1', payload), payload);
+    await runner.idle();
+    order.push('idle');
+    expect(order).toEqual(['finalize', 'idle']);
+  });
 });

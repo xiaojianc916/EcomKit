@@ -29,10 +29,12 @@ export function stripProcessingParams(url: URL): URL {
   return out;
 }
 
-/** 原图地址：规范化（https、去转义斜杠）后去掉处理参数 */
-export function originalImageUrl(raw: string, base?: string): string | undefined {
-  const norm = normalizeUrl(raw, base === undefined ? {} : { base });
-  if (!norm) return undefined;
+function normalizeOpts(base?: string): { base?: string } {
+  return base === undefined ? {} : { base };
+}
+
+/** 已规范化的地址 → 去掉 CDN 处理参数后的原图地址 */
+function originalOfNormalized(norm: string): string | undefined {
   try {
     return stripProcessingParams(new URL(norm)).toString();
   } catch {
@@ -41,16 +43,50 @@ export function originalImageUrl(raw: string, base?: string): string | undefined
 }
 
 /**
+ * 一张图要同时算出「原图 / 候选列表 / 缩略图」三样。
+ *
+ * 原来这三个入口各自把同一个地址完整解析一遍（normalizeUrl + new URL + stripProcessingParams），
+ * 一张详情图就是 3 次多余的 URL 解析；200 张详情图各带 2 个候选时是上千次。
+ * 这里一次解析、三样都从它派生。
+ */
+interface ResolvedImage {
+  /** [原图, 页面原始 URL]，相同则只留一个 */
+  candidates: string[];
+  /** 原图地址（没有处理参数时等于原始地址） */
+  original: string;
+}
+
+function resolveImage(raw: string, base?: string): ResolvedImage | null {
+  const norm = normalizeUrl(raw, normalizeOpts(base));
+  if (!norm) return null;
+  const original = originalOfNormalized(norm) ?? norm;
+  return {
+    candidates: original === norm ? [norm] : [original, norm],
+    original,
+  };
+}
+
+/** 原图地址：规范化（https、去转义斜杠）后去掉处理参数 */
+export function originalImageUrl(raw: string, base?: string): string | undefined {
+  return resolveImage(raw, base)?.original;
+}
+
+/**
  * 图片素材的候选地址（§7.5）：[原图, 页面原始 URL]。
  * 原图和原始 URL 相同时只留一个（ProductSnapshot 要求 candidates 非空即可，不要求多个）。
  */
 export function originalImageCandidates(raw: string, base?: string): string[] {
-  const list = [originalImageUrl(raw, base), normalizeUrl(raw, base === undefined ? {} : { base })];
-  const out: string[] = [];
-  for (const url of list) {
-    if (url && !out.includes(url)) out.push(url);
+  return resolveImage(raw, base)?.candidates ?? [];
+}
+
+function thumbnailFromOriginal(original: string, width: number): string | undefined {
+  try {
+    const url = new URL(original);
+    url.search = `?imageView2/2/w/${width}/q/80`;
+    return url.toString();
+  } catch {
+    return undefined;
   }
-  return out;
 }
 
 /**
@@ -60,13 +96,7 @@ export function originalImageCandidates(raw: string, base?: string): string[] {
 export function thumbnailUrl(raw: string, width = 200, base?: string): string | undefined {
   const original = originalImageUrl(raw, base);
   if (!original) return undefined;
-  try {
-    const url = new URL(original);
-    url.search = `?imageView2/2/w/${width}/q/80`;
-    return url.toString();
-  } catch {
-    return undefined;
-  }
+  return thumbnailFromOriginal(original, width);
 }
 
 export interface PddImageAssetOptions {
@@ -79,23 +109,23 @@ export interface PddImageAssetOptions {
 }
 
 /** 一张图片 → 素材；地址不可用时返回 null（调用方过滤掉） */
-export function toPddImageAsset(raw: PddRawImage, opts: PddImageAssetOptions): Asset | null {
-  const candidates = originalImageCandidates(raw.url, opts.base);
-  if (candidates.length === 0) return null;
-  const first = candidates[0];
-  if (first === undefined) return null;
+export function toPddImageAsset(raw: PddRawImage, options: PddImageAssetOptions): Asset | null {
+  // 同一个地址只解析一次：候选地址、key、缩略图都从它派生
+  const resolved = resolveImage(raw.url, options.base);
+  const first = resolved?.candidates[0];
+  if (!resolved || first === undefined) return null;
 
   const asset: Asset = {
     key: assetKeyFromUrl(first),
-    kind: opts.kind,
-    index: opts.index,
-    candidates,
+    kind: options.kind,
+    index: options.index,
+    candidates: resolved.candidates,
   };
-  const preview = thumbnailUrl(raw.url, 200, opts.base);
+  const preview = thumbnailFromOriginal(resolved.original, 200);
   if (preview !== undefined) asset.preview = preview;
-  if (opts.label !== undefined && opts.label !== '') asset.label = opts.label;
-  const width = raw.width ?? opts.width;
-  const height = raw.height ?? opts.height;
+  if (options.label !== undefined && options.label !== '') asset.label = options.label;
+  const width = raw.width ?? options.width;
+  const height = raw.height ?? options.height;
   if (width !== undefined) asset.width = width;
   if (height !== undefined) asset.height = height;
   return asset;
@@ -103,7 +133,7 @@ export function toPddImageAsset(raw: PddRawImage, opts: PddImageAssetOptions): A
 
 /** 拼多多的主图视频都是 mp4 直链（待验证：暂未见到 m3u8 / DASH） */
 export function toPddVideoCandidate(raw: PddRawVideo, base?: string): VideoCandidate | undefined {
-  const url = normalizeUrl(raw.url, base === undefined ? {} : { base });
+  const url = normalizeUrl(raw.url, normalizeOpts(base));
   if (!url) return undefined;
 
   const guessed = guessContainer(url);

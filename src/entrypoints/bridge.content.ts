@@ -68,11 +68,15 @@ function bootstrap(): void {
   const prefix = publishBridgePrefix(document);
 
   const ring: BridgeCaptureMessage[] = [];
+  /** 与 ring 一一对应的已序列化 detail，回放时直接派发（避免每条都重新 stringify） */
+  const ringDetail: string[] = [];
   const matchers: RuleMatcher[] = [];
 
   const emit = (name: string, payload: unknown) => {
     try {
-      document.dispatchEvent(new CustomEvent(name, { detail: JSON.stringify(payload) }));
+      const detail = JSON.stringify(payload);
+      if (typeof detail !== 'string') return;
+      document.dispatchEvent(new CustomEvent(name, { detail }));
     } catch {
       /* 序列化失败就丢弃，不影响页面 */
     }
@@ -85,7 +89,8 @@ function bootstrap(): void {
   const ensureTap = () => {
     if (tapInstalled || matchers.length === 0) return;
     tapInstalled = true;
-    installNetworkTap(prefix, matchers, ring, emit);
+    // ringDetail 与 ring 同步维护：抓到时就序列化一次，回放直接派发
+    installNetworkTap(prefix, matchers, ring, ringDetail);
     protectNativeToString(fetchSource);
   };
 
@@ -102,8 +107,15 @@ function bootstrap(): void {
       addRules(matchers, Array.isArray(hello.rules) ? hello.rules : []);
       ensureTap();
       const wanted = new Set(hello.ruleIds ?? []);
-      for (const msg of ring) {
-        if (wanted.size === 0 || wanted.has(msg.ruleId)) emit(bridgeEvent.capture(prefix), msg);
+      const captureEvent = bridgeEvent.capture(prefix);
+      for (let i = 0; i < ring.length; i += 1) {
+        const msg = ring[i];
+        const detail = ringDetail[i];
+        if (msg === undefined || detail === undefined) continue;
+        // 回放用已序列化的 detail，避免对同一批抓包再 stringify 一遍（几 MB × 60 条）
+        if (wanted.size === 0 || wanted.has(msg.ruleId)) {
+          document.dispatchEvent(new CustomEvent(captureEvent, { detail }));
+        }
       }
       emit(bridgeEvent.ready(prefix), { ok: true });
     } catch {
@@ -189,23 +201,45 @@ function installNetworkTap(
   prefix: string,
   matchers: RuleMatcher[],
   ring: BridgeCaptureMessage[],
-  emit: (name: string, payload: unknown) => void,
+  ringDetail: string[],
 ): void {
+  /** 环形缓冲里存的是**已序列化好的 detail 字符串**，回放时直接派发，不用再 stringify 一遍 */
   const pushCapture = (ruleId: string, url: string, text: string, at: number, dropped = false) => {
     const msg: BridgeCaptureMessage = { ruleId, url, json: dropped ? null : text, at };
     if (dropped) msg.dropped = true;
+    const detail = JSON.stringify(msg);
     ring.push(msg);
     if (ring.length > RING_SIZE) ring.shift();
-    emit(bridgeEvent.capture(prefix), msg);
+    ringDetail.push(detail);
+    if (ringDetail.length > RING_SIZE) ringDetail.shift();
+    document.dispatchEvent(new CustomEvent(bridgeEvent.capture(prefix), { detail }));
   };
 
   const matchRule = (url: string) => matchers.find((m) => m.re.test(url));
+
+  /**
+   * 体积上限判断。
+   *
+   * `text.length` 是 UTF-16 码元数，不是字节数：中文 JSON 的字节数约为它的 3 倍。
+   * 只按 length 判会把「2MB 中文 JSON」当成没超限（实际 6MB），在页面主线程上多做一次
+   * 6MB 的 JSON.parse + 6MB 的 CustomEvent 派发。所以先用 length 做便宜的粗筛，
+   * 只有落在可疑区间（maxBytes/3 ~ maxBytes）才真正量字节数。
+   */
+  const exceedsLimit = (text: string, maxBytes: number): boolean => {
+    if (text.length <= maxBytes / 3) return false;
+    if (text.length > maxBytes) return true;
+    try {
+      return new TextEncoder().encode(text).byteLength > maxBytes;
+    } catch {
+      return true;
+    }
+  };
 
   const handleJsonText = (url: string, text: string) => {
     const hit = matchRule(url);
     if (!hit) return;
     // 体积上限：超了就不克隆，保护页面性能（§7.4 表格最后一行）
-    if (text.length > (hit.rule.maxBytes ?? DEFAULT_MAX_BYTES)) {
+    if (exceedsLimit(text, hit.rule.maxBytes ?? DEFAULT_MAX_BYTES)) {
       pushCapture(hit.rule.id, url, '', Date.now(), true);
       return;
     }

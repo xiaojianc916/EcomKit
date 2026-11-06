@@ -7,6 +7,9 @@ import { nameKey } from './sanitize';
  * 这是同一个商品的第二份文件，而不是一堆看不懂的哈希。
  */
 
+/** 序号上限：到这儿还全被占用就退回时间戳，避免死循环 */
+const MAX_SUFFIX = 100000;
+
 /** 拆成主体和扩展名。以点开头的隐藏文件（.ecbox.json）整体当主体，不加序号到点前面 */
 export function splitExt(name: string): { stem: string; ext: string } {
   const dot = name.lastIndexOf('.');
@@ -17,6 +20,9 @@ export function splitExt(name: string): { stem: string; ext: string } {
 /**
  * 在已有的名字集合里给 desired 找一个不冲突的名字。
  * 比较一律走 nameKey（小写），因为 Windows 和 FSA 都大小写不敏感。
+ *
+ * existing 里的大小写形态不确定（可能是磁盘上的真实名字，也可能是调用方已经小写过的键），
+ * 所以统一先过一遍 nameKey —— 这里是判重的唯一入口，宁可多几次 toLowerCase 也不能漏判。
  */
 export function uniqueName(desired: string, existing: Iterable<string>): string {
   const taken = new Set<string>();
@@ -24,7 +30,7 @@ export function uniqueName(desired: string, existing: Iterable<string>): string 
   if (!taken.has(nameKey(desired))) return desired;
 
   const { stem, ext } = splitExt(desired);
-  for (let n = 2; n < 100000; n += 1) {
+  for (let n = 2; n < MAX_SUFFIX; n += 1) {
     const candidate = `${stem} (${n})${ext}`;
     if (!taken.has(nameKey(candidate))) return candidate;
   }

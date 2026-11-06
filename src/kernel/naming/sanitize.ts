@@ -64,12 +64,18 @@ const SEPARATOR_RUN = /[-_｜|]{2,}/g;
 /** 「空括号」判定：括号里只有空白、标点或符号 */
 const ONLY_FILLER = /^[\s\p{P}\p{S}]*$/u;
 
-/** 成对括号，内容只由标点和空白组成时整对删掉（「【】连衣裙」→「连衣裙」） */
-const BRACKET_PAIRS: ReadonlyArray<readonly [open: string, close: string]> = [
-  ['【', '】'],
-  ['「', '」'],
-  ['(', ')'],
-  ['（', '）'],
+/**
+ * 成对括号，内容只由标点和空白组成时整对删掉（「【】连衣裙」→「连衣裙」）。
+ *
+ * 正则**预编译**放在这里：原来在 removeEmptyBrackets 的循环里按轮 new RegExp，
+ * 每次清洗标题都要重建 4 个正则对象（一张商品图调一次 sanitizeName，几十张图就是几百次）。
+ * 方括号在字符类里需要转义，所以 [ ] 单独写成 \[ \]。
+ */
+const BRACKET_PATTERNS: ReadonlyArray<RegExp> = [
+  /【([\s\S]*?)】/gu,
+  /「([\s\S]*?)」/gu,
+  /\(([\s\S]*?)\)/gu,
+  /（([\s\S]*?)）/gu,
 ];
 
 /** Windows 保留设备名。大小写不敏感，带扩展名（CON.txt）同样被占用 */
@@ -120,17 +126,13 @@ export function nameKey(name: string): string {
   return name.toLowerCase();
 }
 
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function removeEmptyBrackets(text: string): string {
   let out = text;
   // 循环到稳定：嵌套的空括号（例如「【「」】」）要一层层剥掉
   for (;;) {
     let changed = false;
-    for (const [open, close] of BRACKET_PAIRS) {
-      const re = new RegExp(`${escapeRegExp(open)}([^]*?)${escapeRegExp(close)}`, 'u');
+    for (const re of BRACKET_PATTERNS) {
+      re.lastIndex = 0;
       const next = out.replace(re, (whole, inner: string) =>
         ONLY_FILLER.test(inner) ? '' : whole,
       );

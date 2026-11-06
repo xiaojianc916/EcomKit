@@ -2,9 +2,7 @@
   "manifest_version": 3,
   "name": "Handle Msg Probe",
   "version": "0.0.1",
-  "permissions": [
-    "storage"
-  ],
+  "permissions": ["storage"],
   "background": {
     "service_worker": "bg.js"
   },

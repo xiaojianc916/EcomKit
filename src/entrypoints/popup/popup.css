@@ -20,53 +20,128 @@
     color-scheme: dark;
   }
 }
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 body {
   width: 320px;
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  font-family:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   font-size: 13px;
   line-height: 1.6;
   font-variant-numeric: tabular-nums;
 }
-.pp { display: flex; flex-direction: column; }
-.pp__hdr {
-  display: flex; align-items: center; gap: 6px;
-  height: 36px; padding: 0 12px;
-  border-bottom: 1px solid var(--line);
-  font-weight: 600; font-size: 13px;
+.pp {
+  display: flex;
+  flex-direction: column;
 }
-.pp__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-3); }
-.pp__body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.pp__title { font-size: 13px; font-weight: 600; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pp__meta { font-size: 12px; color: var(--fg-3); margin: 0; }
+.pp__hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  font-size: 13px;
+}
+.pp__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-3);
+}
+.pp__body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pp__title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pp__meta {
+  font-size: 12px;
+  color: var(--fg-3);
+  margin: 0;
+}
 .pp__row {
-  display: flex; align-items: center; gap: 8px;
-  height: 32px; padding: 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 4px;
   border-radius: 4px;
 }
-.pp__row:hover { background: var(--bg-2); }
-.pp__row-name { flex: 1; font-size: 13px; }
-.pp__row-count { font-size: 12px; color: var(--fg-2); }
-.pp__row-btn {
-  border: 1px solid var(--line); background: transparent; color: var(--fg);
-  height: 24px; padding: 0 8px; border-radius: 4px; cursor: pointer;
-  font-family: inherit; font-size: 12px;
+.pp__row:hover {
+  background: var(--bg-2);
 }
-.pp__row-btn:hover { background: var(--bg-2); }
+.pp__row-name {
+  flex: 1;
+  font-size: 13px;
+}
+.pp__row-count {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.pp__row-btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg);
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+}
+.pp__row-btn:hover {
+  background: var(--bg-2);
+}
 .pp__primary {
-  height: 34px; border-radius: 6px; border: none;
-  background: var(--accent); color: #fff;
-  font-family: inherit; font-size: 13px; font-weight: 600;
+  height: 34px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
 }
-.pp__primary:disabled { opacity: .5; cursor: default; }
-.pp__empty { color: var(--fg-2); font-size: 13px; margin: 0; }
-.pp__ftr {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 8px 12px; border-top: 1px solid var(--line);
-  font-size: 12px; color: var(--fg-3);
+.pp__primary:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
-.pp__link { color: var(--fg-2); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; background: none; border: none; font: inherit; padding: 0; }
+.pp__empty {
+  color: var(--fg-2);
+  font-size: 13px;
+  margin: 0;
+}
+.pp__ftr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.pp__link {
+  color: var(--fg-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  font: inherit;
+  padding: 0;
+}

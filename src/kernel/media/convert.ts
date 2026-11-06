@@ -16,6 +16,16 @@ import { EcError } from '../errors/ec-error';
 /** JPEG 质量（§9.8） */
 export const JPEG_QUALITY = 0.92;
 
+/**
+ * 单张图允许进 OffscreenCanvas 的总像素上限。
+ *
+ * 为什么要有：Chrome 的 canvas 有最大面积限制（远超单边 16384 时的实现差异），
+ * 而电商的**超长详情图**（1500×20000 这类，拼多多/抖音都很常见）一旦超过上限，
+ * getContext 或 convertToBlob 会直接失败，表现为「这张图一直转码失败」。
+ * 2560×1440 的常见主图（约 370 万像素）远在上限以内，所以正常商品图不受影响。
+ */
+export const MAX_CANVAS_PIXELS = 16_000_000;
+
 /** 需要转成 JPG 的格式 */
 export const CONVERTIBLE = ['webp', 'avif'] as const;
 /** 不能转的格式及原因 */
@@ -48,6 +58,10 @@ export async function hasTransparency(bitmap: ImageBitmap): Promise<boolean> {
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d');
   if (!ctx) return false;
+  // 采样版必须开平滑：不开时 drawImage 是最近邻取样，1500×20000 的详情图缩到 32×32
+  // 只会命中极少数像素，边缘的透明留白很容易整片漏掉（§9.8 会把带透明的图转成白底 JPG）
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(bitmap, 0, 0, width, height, 0, 0, width, height);
   const data = ctx.getImageData(0, 0, width, height).data;
   for (let i = 3; i < data.length; i += 4) {
@@ -61,6 +75,10 @@ export async function bitmapToJpeg(bitmap: ImageBitmap, quality = JPEG_QUALITY):
   const width = bitmap.width;
   const height = bitmap.height;
   if (width <= 0 || height <= 0) throw new EcError('INTERNAL', { reason: 'zero-size-image' });
+  // 超长详情图会超出 Chrome 的 canvas 面积上限：抛出可读原因，调用方按「转码失败就用原图」处理
+  if (width * height > MAX_CANVAS_PIXELS) {
+    throw new EcError('INTERNAL', { reason: 'image-too-large-for-canvas' });
+  }
 
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d');

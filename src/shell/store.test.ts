@@ -5,6 +5,7 @@ import {
   createShellStore,
   HANDLE_MIN_Y,
   handleBadge,
+  handleBadgeEq,
   isDrag,
   isViewportNarrow,
   type PrefsPort,
@@ -156,6 +157,39 @@ describe('handleBadge（§10.2 把手上的数字和状态表）', () => {
       kind: 'attention',
       count: 1,
     });
+  });
+});
+
+describe('handleBadgeEq（角标引用复用）', () => {
+  it('同类同内容算相等', () => {
+    expect(handleBadgeEq({ kind: 'count', count: 3 }, { kind: 'count', count: 3 })).toBe(true);
+    expect(
+      handleBadgeEq({ kind: 'progress', percent: 42 }, { kind: 'progress', percent: 42 }),
+    ).toBe(true);
+    expect(handleBadgeEq({ kind: 'resolving' }, { kind: 'resolving' })).toBe(true);
+    expect(handleBadgeEq({ kind: 'done' }, { kind: 'done' })).toBe(true);
+  });
+
+  it('内容不同算不等', () => {
+    expect(handleBadgeEq({ kind: 'count', count: 3 }, { kind: 'count', count: 4 })).toBe(false);
+    expect(
+      handleBadgeEq({ kind: 'progress', percent: 42 }, { kind: 'progress', percent: 43 }),
+    ).toBe(false);
+    expect(handleBadgeEq({ kind: 'attention', count: 1 }, { kind: 'attention', count: 2 })).toBe(
+      false,
+    );
+  });
+
+  it('不同类型的角标永远不等（否则图标会停在上一个状态）', () => {
+    expect(handleBadgeEq({ kind: 'count', count: 3 }, { kind: 'progress', percent: 3 })).toBe(
+      false,
+    );
+    expect(handleBadgeEq({ kind: 'done' }, { kind: 'count', count: 0 })).toBe(false);
+  });
+
+  it('同一个引用直接相等', () => {
+    const badge = { kind: 'count' as const, count: 7 };
+    expect(handleBadgeEq(badge, badge)).toBe(true);
   });
 });
 

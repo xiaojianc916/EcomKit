@@ -27,8 +27,10 @@ function emptyGroup(): GroupProgress {
 export function initByGroup(items: readonly WorkItem[]): ByGroup {
   const out: ByGroup = {};
   for (const item of items) {
-    const current = out[item.group] ?? emptyGroup();
-    out[item.group] = { ...current, total: current.total + 1 };
+    // 就地累加：一个 500 张详情图的任务只有 4 个分组，没必要为每张图重建一次分组对象
+    const current = out[item.group];
+    if (current) current.total += 1;
+    else out[item.group] = { total: 1, done: 0, failed: 0, skipped: 0 };
   }
   return out;
 }
@@ -102,7 +104,9 @@ export function applyItemResult(record: JobRecord, item: WorkItem, result: ItemR
   let done = record.done;
   let skipped = record.skipped;
   let bytes = record.bytes;
-  const failed = [...record.failed];
+  // 只有真的多了一条失败记录时才复制数组：500 项全失败时，
+  // 旧实现每条结果都复制一遍整个 failed，总复制量是 500²/2 = 12.5 万次
+  let failed = record.failed;
   let groupDone = current.done;
   let groupSkipped = current.skipped;
   let groupFailed = current.failed;
@@ -119,7 +123,7 @@ export function applyItemResult(record: JobRecord, item: WorkItem, result: ItemR
       break;
     case 'failed':
       groupFailed += 1;
-      if (result.code) failed.push({ itemKey: item.itemKey, code: result.code });
+      if (result.code) failed = [...failed, { itemKey: item.itemKey, code: result.code }];
       break;
   }
 

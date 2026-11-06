@@ -22,7 +22,10 @@ function ascii(bytes: Uint8Array, start: number, length: number): string {
 
 function startsWith(bytes: Uint8Array, signature: readonly number[]): boolean {
   if (bytes.length < signature.length) return false;
-  return signature.every((b, i) => bytes[i] === b);
+  for (let i = 0; i < signature.length; i += 1) {
+    if (bytes[i] !== signature[i]) return false;
+  }
+  return true;
 }
 
 const JPEG = [0xff, 0xd8, 0xff] as const;
@@ -86,55 +89,100 @@ export function matchesExpectation(result: SniffResult, expect: 'image' | 'video
 /**
  * 从响应体里读前 N 个字节，返回 { head } 以及一个「把已读部分接回去」的流。
  * 为什么要把流接回去：fetch 的 body 只能读一次，嗅探完后视频还要继续流式写入文件。
+ *
+ * **rest 是完整 body**（从第 0 个字节开始，含被 head 借走的那一段）：fetcher 把它直接当
+ * 响应体交给落盘，少一段就是文件损坏，所以这里绝不能只回流「head 之后的部分」。
+ *
+ * 在这个前提下把拷贝降到 0~1 次：
+ *   · 首块就够长（fetch 的典型块是 64KB，远大于 32 字节，这是绝大多数情况）：
+ *     head 是首块的 subarray（零拷贝），rest 的第一项就是**原始首块本身**（零拷贝）。
+ *   · 首块不足 N、累积了多块：合并一次得到 merged，head 是它的 subarray，
+ *     rest 的第一项是 merged 整块 —— 只合并一次，不额外拷贝。
  */
 export async function readHead(
   body: ReadableStream<Uint8Array> | null,
   size = SNIFF_BYTES,
 ): Promise<{ head: Uint8Array; rest: ReadableStream<Uint8Array> | null }> {
   if (!body) return { head: new Uint8Array(0), rest: null };
+  if (size <= 0) return { head: new Uint8Array(0), rest: body };
 
   const reader = body.getReader();
+
+  /** 先看首块：fetch 的块大小通常是 64KB，一块就够嗅探 */
+  const first = await reader.read();
+  if (first.done) return { head: new Uint8Array(0), rest: restOf(reader, null) };
+
+  const head0 = first.value;
+  if (head0 && head0.byteLength >= size) {
+    // 常见路径：零拷贝。head 借用首块的视图，rest 的第一项就是首块本身
+    return { head: head0.subarray(0, size), rest: restOf(reader, head0) };
+  }
+
+  // 罕见路径：首块不足 size（被代理切碎的小块，或极短的响应），继续累积
   const chunks: Uint8Array[] = [];
-  let total = 0;
+  if (head0 && head0.byteLength > 0) chunks.push(head0);
+  let total = head0?.byteLength ?? 0;
   while (total < size) {
     const { done, value } = await reader.read();
     if (done) break;
-    if (value) {
-      chunks.push(value);
-      total += value.byteLength;
-    }
+    if (!value || value.byteLength === 0) continue;
+    chunks.push(value);
+    total += value.byteLength;
   }
 
+  const merged = concat(chunks);
+  return {
+    head: merged.subarray(0, Math.min(size, merged.length)),
+    rest: restOf(reader, merged.length > 0 ? merged : null),
+  };
+}
+
+/**
+ * 把「已经读出来的整块」放回流的头部，再接上剩下的读取。
+ * 用 pull 模型 + highWaterMark: 0，只有下游要数据时才从源 reader 读（背压照常往上传）。
+ */
+function restOf(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  pending: Uint8Array | null,
+): ReadableStream<Uint8Array> {
+  let buffered = pending;
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (buffered) {
+          const chunk = buffered;
+          buffered = null;
+          controller.enqueue(chunk);
+          return;
+        }
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            controller.close();
+            return;
+          }
+          if (value && value.byteLength > 0) controller.enqueue(value);
+        } catch (e) {
+          controller.error(e);
+        }
+      },
+      async cancel(reason) {
+        await reader.cancel(reason).catch(() => {});
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
+function concat(chunks: readonly Uint8Array[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0] as Uint8Array;
+  let total = 0;
+  for (const chunk of chunks) total += chunk.byteLength;
   const merged = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  const head = merged.subarray(0, Math.min(size, merged.length));
-
-  const rest = new ReadableStream<Uint8Array>({
-    start(controller) {
-      if (merged.length > 0) controller.enqueue(merged);
-      void (async () => {
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) {
-              controller.close();
-              return;
-            }
-            if (value) controller.enqueue(value);
-          }
-        } catch (e) {
-          controller.error(e);
-        }
-      })();
-    },
-    cancel(reason) {
-      void reader.cancel(reason).catch(() => {});
-    },
-  });
-
-  return { head, rest };
+  return merged;
 }

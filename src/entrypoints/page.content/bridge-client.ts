@@ -58,7 +58,13 @@ export function createPageBridge(manifest: PlatformManifest, pageKind: string): 
   }
 
   const listeners = new Set<(p: CapturedPayload) => void>();
+  /**
+   * 抓包环形缓冲。用「数组 + 写指针」而不是 push/shift：
+   * shift() 是 O(n) 且每一步都要搬动整个数组，抓包源在商品页里可能连吐几十条
+   * 几 MB 的 JSON，几十次搬动就是几十次大数组复制。
+   */
   const buffer: CapturedPayload[] = [];
+  let bufferStart = 0;
   const pendingReads = new Map<string, { resolve: (v: unknown) => void; timer: number }>();
   /** 正在等新抓包的迭代器；dispose 时统一唤醒让它们退出 */
   const wakers = new Set<() => void>();
@@ -83,7 +89,12 @@ export function createPageBridge(manifest: PlatformManifest, pageKind: string): 
     }
     const payload: CapturedPayload = { ruleId: msg.ruleId, url: msg.url, json, at: msg.at };
     buffer.push(payload);
-    if (buffer.length > CAPTURE_BUFFER_SIZE) buffer.shift();
+    // 缓冲区满了就推进读指针，等积压到两倍容量时再一次性压缩，摊还 O(1)
+    if (buffer.length - bufferStart > CAPTURE_BUFFER_SIZE) bufferStart += 1;
+    if (bufferStart > CAPTURE_BUFFER_SIZE) {
+      buffer.splice(0, bufferStart);
+      bufferStart = 0;
+    }
     for (const cb of listeners) cb(payload);
   };
 
@@ -148,7 +159,7 @@ export function createPageBridge(manifest: PlatformManifest, pageKind: string): 
     },
 
     captures(ruleId: string, signal?: AbortSignal): AsyncIterable<CapturedPayload> {
-      const snapshot = buffer.filter((p) => p.ruleId === ruleId);
+      const snapshot = buffer.slice(bufferStart).filter((p) => p.ruleId === ruleId);
       return {
         async *[Symbol.asyncIterator]() {
           for (const p of snapshot) {
@@ -156,6 +167,7 @@ export function createPageBridge(manifest: PlatformManifest, pageKind: string): 
             yield p;
           }
           const queue: CapturedPayload[] = [];
+          let queueStart = 0;
           let wake: (() => void) | null = null;
           const cb = (p: CapturedPayload) => {
             if (p.ruleId !== ruleId) return;
@@ -169,8 +181,15 @@ export function createPageBridge(manifest: PlatformManifest, pageKind: string): 
           try {
             // 旧实现是无条件 while(true)：没有退出条件，整个识别永远不会结束
             while (!signal?.aborted && !disposed) {
-              if (queue.length > 0) {
-                yield queue.shift() as CapturedPayload;
+              if (queueStart < queue.length) {
+                const next = queue[queueStart];
+                queueStart += 1;
+                // 读完一半就压缩一次，避免 queue 无限增长（shift 是 O(n)，这里是摊还 O(1)）
+                if (queueStart > 32 && queueStart * 2 > queue.length) {
+                  queue.splice(0, queueStart);
+                  queueStart = 0;
+                }
+                if (next !== undefined) yield next;
                 continue;
               }
               await new Promise<void>((r) => {

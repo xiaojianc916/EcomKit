@@ -67,15 +67,19 @@ function skeleton(value, depth = 0, maxDepth = 5) {
   if (value === null || value === undefined) return String(value);
   if (Array.isArray(value)) {
     if (value.length === 0) return [];
-    return depth >= maxDepth ? `[array:${value.length}]` : [skeleton(value[0], depth + 1, maxDepth)];
+    return depth >= maxDepth
+      ? `[array:${value.length}]`
+      : [skeleton(value[0], depth + 1, maxDepth)];
   }
   const t = typeof value;
-  if (t === 'string') return value.length > 120 ? `string(${value.length}) ${value.slice(0, 60)}…` : value;
+  if (t === 'string')
+    return value.length > 120 ? `string(${value.length}) ${value.slice(0, 60)}…` : value;
   if (t === 'number' || t === 'boolean') return value;
   if (t !== 'object') return t;
   if (depth >= maxDepth) return 'object';
   const out = {};
-  for (const [k, v] of Object.entries(value).slice(0, 80)) out[k] = skeleton(v, depth + 1, maxDepth);
+  for (const [k, v] of Object.entries(value).slice(0, 80))
+    out[k] = skeleton(v, depth + 1, maxDepth);
   return out;
 }
 
@@ -118,10 +122,19 @@ await page.waitForTimeout(9000);
 
 const report = await page.evaluate(
   ({ globalPaths }) => {
-    const out = { globals: {}, resources: [], images: [], videos: [], bodyText: '', title: document.title };
+    const out = {
+      globals: {},
+      resources: [],
+      images: [],
+      videos: [],
+      bodyText: '',
+      title: document.title,
+    };
     for (const path of globalPaths) {
       try {
-        const value = path.split('.').reduce((acc, k) => (acc == null ? undefined : acc[k]), window);
+        const value = path
+          .split('.')
+          .reduce((acc, k) => (acc == null ? undefined : acc[k]), window);
         out.globals[path] = value === undefined ? '__undefined__' : value;
       } catch (e) {
         out.globals[path] = `__error__:${String(e)}`;
@@ -132,14 +145,17 @@ const report = await page.evaluate(
       .map((r) => r.name)
       .filter((n) => /goods|detail|product|sku|api\/|promotion/i.test(n))
       .slice(0, 80);
-    out.images = [...document.querySelectorAll('img')]
-      .slice(0, 120)
-      .map((i) => ({ src: i.currentSrc || i.src, w: i.naturalWidth, h: i.naturalHeight, cls: String(i.className).slice(0, 60) }));
+    out.images = [...document.querySelectorAll('img')].slice(0, 120).map((i) => ({
+      src: i.currentSrc || i.src,
+      w: i.naturalWidth,
+      h: i.naturalHeight,
+      cls: String(i.className).slice(0, 60),
+    }));
     out.videos = [...document.querySelectorAll('video')].slice(0, 20).map((v) => ({
       src: v.currentSrc || v.src,
       sources: [...v.querySelectorAll('source')].map((s) => s.src),
     }));
-    out.bodyText = document.body?.innerText?.slice(0, 4000) ?? '';
+    out.bodyText = document.body?.textContent?.slice(0, 4000) ?? '';
     return out;
   },
   { globalPaths: GLOBAL_PATHS[platformArg] ?? [] },
@@ -166,7 +182,12 @@ const out = {
   images: report.images,
   videos: report.videos,
   bodyText: report.bodyText,
-  captured: captured.map((c) => ({ url: c.url, status: c.status, bytes: c.bytes, skeleton: skeleton(c.json) })),
+  captured: captured.map((c) => ({
+    url: c.url,
+    status: c.status,
+    bytes: c.bytes,
+    skeleton: skeleton(c.json),
+  })),
   capturedRaw: captured,
   htmlNoScript,
 };

@@ -10,26 +10,42 @@ export interface LogEntry {
   data?: unknown;
 }
 
-/** 内存环形缓冲，最多 500 条（§6.5、§6.7） */
+/**
+ * 内存环形缓冲，最多 500 条（§6.5、§6.7）。
+ *
+ * 用 head 游标而不是 push + splice(0, 1)：后者在缓冲满了之后每写一条都要把
+ * 剩下 499 个元素整体前移一次，一整轮下载（几百条日志）就是几十万次指针搬运。
+ * head 游标下 push 是 O(1)，只有 snapshot() 需要按顺序复制一份。
+ */
 export class LogBuffer {
   private readonly limit: number;
-  private readonly items: LogEntry[] = [];
+  private items: LogEntry[] = [];
+  /** 环形起点：items[head] 是最旧的一条 */
+  private head = 0;
 
   constructor(limit = 500) {
     this.limit = limit;
   }
 
   push(entry: LogEntry): void {
-    this.items.push(entry);
-    if (this.items.length > this.limit) this.items.splice(0, this.items.length - this.limit);
+    if (this.items.length < this.limit) {
+      this.items.push(entry);
+      return;
+    }
+    // 缓冲已满：覆盖最旧的一条并后移起点
+    this.items[this.head] = entry;
+    this.head = (this.head + 1) % this.limit;
   }
 
+  /** 按时间顺序返回一份拷贝（调用方可能长持有，所以必须复制） */
   snapshot(): LogEntry[] {
-    return [...this.items];
+    if (this.items.length < this.limit || this.head === 0) return [...this.items];
+    return [...this.items.slice(this.head), ...this.items.slice(0, this.head)];
   }
 
   clear(): void {
-    this.items.length = 0;
+    this.items = [];
+    this.head = 0;
   }
 }
 
@@ -56,7 +72,21 @@ function emit(level: LogLevel, scope: string, msg: string, data?: unknown): void
   else console.info(line, data ?? '');
 }
 
+/**
+ * 日志数据的快照拷贝。
+ *
+ * 优先用官方的 structuredClone（结构化克隆算法，原生实现）：JSON 往返要先把整个
+ * 对象序列化成字符串再解析回来，对大对象的开销是 3~5 倍，而且会丢掉 Date / Map 的语义
+ * （诊断包的 toSkeleton 对 Date 本来就有专门分支）。拿不到或用不了时再退回 JSON。
+ */
 function safeClone(v: unknown): unknown {
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(v);
+    } catch {
+      // 含函数 / Proxy / 不可克隆对象：退回 JSON 路径
+    }
+  }
   try {
     return JSON.parse(JSON.stringify(v));
   } catch {

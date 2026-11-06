@@ -31,10 +31,12 @@ export function shadowCompat(opts: { rootFontSize?: number } = {}): Plugin {
       });
 
       if (properties.length > 0) {
-        const hostRule = root.first;
-        const decls = properties.map((p) => `${p.prop}: ${p.value};`).join('\n  ');
+        // 去重：同一个自定义属性可能被 @property 声明多次（Tailwind 生成时会），
+        // 重复声明在 :host 里既没必要也会让后一条覆盖前一条的 initial-value。
+        const seen = new Map<string, string>();
+        for (const p of properties) seen.set(p.prop, p.value);
+        const decls = [...seen].map(([prop, value]) => `${prop}: ${value};`).join('\n  ');
         root.prepend(`:host {\n  ${decls}\n}`);
-        void hostRule;
       }
     },
   };

@@ -28,7 +28,9 @@ export const pageFeatures: RegisteredFeature[] = Object.entries(manifestModules)
       ...(load ? { page: { load: load as () => Promise<{ default: PageFeature }> } } : {}),
     };
   })
-  .sort((a, b) => a.manifest.order - b.manifest.order || a.manifest.id.localeCompare(b.manifest.id));
+  .sort(
+    (a, b) => a.manifest.order - b.manifest.order || a.manifest.id.localeCompare(b.manifest.id),
+  );
 
 export function featuresForPlatform(platform: string): RegisteredFeature[] {
   return pageFeatures.filter(

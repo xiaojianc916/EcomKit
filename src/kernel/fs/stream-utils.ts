@@ -15,21 +15,20 @@ export async function blobToText(blob: Blob): Promise<string> {
   return stripBom(await blob.text());
 }
 
+/** 共享的编码器：TextEncoder 无状态，每次 new 一个纯粹是浪费（它还要建内部实例） */
+const encoder = new TextEncoder();
+
 /** 文本 → UTF-8 编码的字节数，用来给诊断包和进度统计 */
 export function byteLength(text: string): number {
-  return new TextEncoder().encode(text).byteLength;
+  return encoder.encode(text).byteLength;
 }
 
-/** 把 ReadableStream 收集成 Blob（只在读小文件时用，大文件必须流式写） */
+/**
+ * 把 ReadableStream 收集成 Blob（只在读小文件时用，大文件必须流式写）。
+ * 用 Response 的官方流式读取：分块拼装由浏览器完成，不必自己攒数组再叠一层 Blob。
+ */
 export async function streamToBlob(stream: ReadableStream<Uint8Array>): Promise<Blob> {
-  const chunks: Uint8Array[] = [];
-  const reader = stream.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) chunks.push(value);
-  }
-  return new Blob(chunks as BlobPart[]);
+  return new Response(stream).blob();
 }
 
 /**

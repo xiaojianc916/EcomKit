@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { RegisteredFeature } from '../features/types';
 
 /**
@@ -18,8 +17,10 @@ export interface FeatureTabsProps {
 }
 
 export function FeatureTabs({ features, activeId, onSelect }: FeatureTabsProps) {
-  // §8.5：只有一个功能时不渲染任何标签栏
-  if (features.length <= 1) return null;
+  // §8.5：只有一个功能时不渲染任何标签栏。
+  // 判定必须和 shouldRenderTabs 用**同一个**规则（只有提供 Panel 的功能才占标签位），
+  // 否则以后加一个纯后台功能（没有 page 部分）时，标签栏会为一个看不见的功能留一个空标签。
+  if (!shouldRenderTabs(features)) return null;
 
   return (
     <div
@@ -76,24 +77,12 @@ export function panelFeatures(features: RegisteredFeature[]): RegisteredFeature[
   return features.filter((f) => f.page !== undefined);
 }
 
-/** 组件测试和 popup 里复用：标签栏是否应该出现（§8.5） */
+/**
+ * 标签栏是否应该出现（§8.5）。
+ *
+ * 这是**唯一**的判定入口：FeatureTabs 组件和测试都用它，避免出现
+ * 「组件按 features.length 判、别处按 panelFeatures 判」两套规则给出两个答案。
+ */
 export function shouldRenderTabs(features: RegisteredFeature[]): boolean {
   return panelFeatures(features).length >= 2;
-}
-
-/**
- * 记住当前标签（§8.5「记住用户上次所在的标签」）。
- * 返回 [当前 id, 切换函数]；切换时同时通知外部持久化。
- */
-export function useActiveFeature(
-  features: RegisteredFeature[],
-  preferred: string | null,
-  onChange: (id: string) => void,
-): [string | null, (id: string) => void] {
-  const [active, setActive] = useState<string | null>(() => pickActiveFeature(features, preferred));
-  const select = (id: string): void => {
-    setActive(id);
-    onChange(id);
-  };
-  return [active ?? pickActiveFeature(features, preferred), select];
 }

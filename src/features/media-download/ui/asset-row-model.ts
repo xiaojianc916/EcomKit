@@ -170,6 +170,25 @@ export function previewAssets<T>(assets: readonly T[], max = 4): { shown: T[]; r
   return { shown: assets.slice(0, max), rest: Math.max(assets.length - max, 0) };
 }
 
+/**
+ * 这一类里被选中的素材数（挑选模式半选判断用）。
+ *
+ * 单独抽出来是为了能利用「选中集合比这一类素材少」这个事实：AssetList 每行都要算一次，
+ * 而 200 多张详情图 × 每 200ms 一次进度推送时，assets.filter() 的常驻成本并不低。
+ * 顺带注意这里**不去重**：assets 里的 key 在快照里本就唯一（planner 也依赖这一点）。
+ */
+export function selectedCountOf(
+  assets: readonly Asset[],
+  selectedKeys: ReadonlySet<string>,
+): number {
+  if (selectedKeys.size === 0) return 0;
+  let count = 0;
+  for (const asset of assets) {
+    if (selectedKeys.has(asset.key)) count += 1;
+  }
+  return count;
+}
+
 /** 单个素材的失败原因（失败列表用，§10.5 失败详情） */
 export interface FailureEntry {
   itemKey: string;

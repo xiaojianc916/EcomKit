@@ -22,17 +22,31 @@ const MIN_VALID_MS = 1_000_000_000_000;
 /** 秒级时间戳：小于这个数说明单位是秒 */
 const SECONDS_CUTOFF = 1_000_000_000_000;
 
+const HEX_PREFIX_RE = /^0x[0-9a-f]+$/i;
+const DECIMAL_RE = /^\d+$/;
+const BARE_HEX_RE = /^[0-9a-f]{8,12}$/i;
+const HAS_HEX_LETTER_RE = /[a-f]/i;
+/** 去掉首尾的单个引号（部分 CDN 会把时间戳包在引号里：e="1793000000000"） */
+function stripQuotes(raw: string): string {
+  let text = raw.trim();
+  const head = text.charAt(0);
+  if (head === '"' || head === "'") text = text.slice(1);
+  const tail = text.charAt(text.length - 1);
+  if (tail === '"' || tail === "'") text = text.slice(0, -1);
+  return text;
+}
+
 function normalizeTimestamp(raw: string): number | null {
-  const text = raw.trim().replace(/^["']|["']$/g, '');
+  const text = stripQuotes(raw);
   if (text === '') return null;
 
   // 十六进制形式（部分 CDN 用 8~12 位 hex），必须以 0x 开头或明显含 a-f
   let value: number;
-  if (/^0x[0-9a-f]+$/i.test(text)) {
+  if (HEX_PREFIX_RE.test(text)) {
     value = Number.parseInt(text.slice(2), 16);
-  } else if (/^\d+$/.test(text)) {
+  } else if (DECIMAL_RE.test(text)) {
     value = Number(text);
-  } else if (/^[0-9a-f]{8,12}$/i.test(text) && /[a-f]/i.test(text)) {
+  } else if (BARE_HEX_RE.test(text) && HAS_HEX_LETTER_RE.test(text)) {
     value = Number.parseInt(text, 16);
   } else {
     return null;
@@ -42,6 +56,19 @@ function normalizeTimestamp(raw: string): number | null {
   // 秒 → 毫秒（抖音的 e= 有时是秒）
   const ms = value < SECONDS_CUTOFF ? value * 1000 : value;
   return ms >= MIN_VALID_MS ? ms : null;
+}
+
+/** 在一组查询参数里按候选名字找过期时间 */
+function scan(params: URLSearchParams): number | null {
+  for (let i = 0; i < EXPIRY_PARAMS.length; i += 1) {
+    const name = EXPIRY_PARAMS[i];
+    if (name === undefined) continue;
+    const raw = params.get(name);
+    if (raw === null) continue;
+    const ts = normalizeTimestamp(raw);
+    if (ts !== null) return ts;
+  }
+  return null;
 }
 
 /**
@@ -56,17 +83,13 @@ export function parseExpiry(url: string | URL): number | null {
     return null;
   }
 
-  const sources: URLSearchParams[] = [parsed.searchParams];
-  const hash = parsed.hash.replace(/^#/, '');
-  if (hash.includes('=')) sources.push(new URLSearchParams(hash));
+  const found = scan(parsed.searchParams);
+  if (found !== null) return found;
 
-  for (const params of sources) {
-    for (const name of EXPIRY_PARAMS) {
-      const raw = params.get(name);
-      if (raw === null) continue;
-      const ts = normalizeTimestamp(raw);
-      if (ts !== null) return ts;
-    }
+  const hash = parsed.hash;
+  // 有的播放页把签名塞在 # 后面；没有 '=' 就不是查询串，直接跳过
+  if (hash.includes('=')) {
+    return scan(new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash));
   }
   return null;
 }

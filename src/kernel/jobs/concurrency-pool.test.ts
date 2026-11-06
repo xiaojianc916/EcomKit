@@ -87,4 +87,25 @@ describe('createConcurrencyPool（§6.4 并发控制）', () => {
     await pool.onIdle();
     expect(pool.active).toBe(0);
   });
+
+  it('clear 之后排队中 add() 的 promise 必须 resolve（否则调用方永久悬挂）', async () => {
+    const pool = createConcurrencyPool(1);
+    const release: Array<() => void> = [];
+    const settled: string[] = [];
+    void pool.add(() => new Promise<void>((r) => release.push(r))).then(() => settled.push('a'));
+    void pool.add(() => new Promise<void>((r) => release.push(r))).then(() => settled.push('b'));
+    void pool.add(() => new Promise<void>((r) => release.push(r))).then(() => settled.push('c'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pool.pending).toBe(2);
+
+    pool.clear();
+    await new Promise((r) => setTimeout(r, 0));
+    // 被丢弃的 b / c 也得让 await add() 的调用方继续往下走
+    expect(settled.sort()).toEqual(['b', 'c']);
+    expect(pool.pending).toBe(0);
+
+    release.shift()?.();
+    await pool.onIdle();
+    expect(settled.sort()).toEqual(['a', 'b', 'c']);
+  });
 });

@@ -6,7 +6,7 @@
  *   node scripts/release.ts --bump patch
  */
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,7 +35,11 @@ function main(): void {
     }
     const [maj, min, pat] = version.split('.').map(Number) as [number, number, number];
     version =
-      kind === 'major' ? `${maj + 1}.0.0` : kind === 'minor' ? `${maj}.${min + 1}.0` : `${maj}.${min}.${pat + 1}`;
+      kind === 'major'
+        ? `${maj + 1}.0.0`
+        : kind === 'minor'
+          ? `${maj}.${min + 1}.0`
+          : `${maj}.${min}.${pat + 1}`;
     pkg.version = version;
     writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
     console.log('版本更新为', version);

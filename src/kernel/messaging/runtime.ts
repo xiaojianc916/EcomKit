@@ -70,10 +70,30 @@ const BACKGROUND_ONLY = new Set<string>(['engine.settingsChanged']);
 
 export type SenderKind = 'content' | 'extension-page' | 'offscreen' | 'background' | 'unknown';
 
+/**
+ * 取 URL 的 pathname。
+ *
+ * 为什么不用 `url.endsWith('offscreen.html')`：sender.url 在真实环境里可能带 query / hash
+ * （扩展更新后 Chrome 会给页面 URL 补参数、offscreen 文档也可能被带上 `#`），
+ * 那样 endsWith 就落空 → offscreen 被当成 extension-page → 所有 engine.* 消息被拒 →
+ * 引擎永远收不到任务，用户看到的是「点下载没反应」。同时 endsWith 还会误命中
+ * `notoffscreen.html` 这类同后缀路径。
+ */
+function urlPathname(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+}
+
 export function classifySender(sender: chrome.runtime.MessageSender): SenderKind {
   const url = sender.url ?? '';
-  if (url.endsWith('offscreen.html')) return 'offscreen';
-  if (url.startsWith('chrome-extension://')) return 'extension-page';
+  if (url !== '') {
+    const path = urlPathname(url);
+    if (path.endsWith('/offscreen.html')) return 'offscreen';
+    if (url.startsWith('chrome-extension://')) return 'extension-page';
+  }
   if (typeof sender.tab?.id === 'number') return 'content';
   // SW 自己给自己发的消息：没有 tab、也没有 url
   if (!url) return 'background';
@@ -155,7 +175,6 @@ const FeatureCallSchema = z.object({
   args: z.unknown(),
 });
 const EngineEnqueueSchema = z.object({ job: z.unknown(), payload: z.unknown() });
-const _PersistHandleSchema = z.object({ handle: z.unknown() });
 
 /**
  * 每个方法的 payload 校验器。表里没有的方法不校验（都是无参的）。
