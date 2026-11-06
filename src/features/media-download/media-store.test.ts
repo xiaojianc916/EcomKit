@@ -52,6 +52,15 @@ describe('createMediaStore 勾选类别（§10.3 全局偏好）', () => {
     expect([...store.getState().checkedKinds].sort()).toEqual(['detail', 'main']);
   });
 
+  it('没有可勾选的类别时什么都不做（不能把已有勾选清掉）', () => {
+    const prefs = memoryPrefs();
+    const store = createMediaStore({ prefs, defaultKinds: ALL });
+    store.getState().toggleAll([]);
+    // 空数组的 every(...) 恒为 true，没有这个防御就会被当成「全都勾着」去清空
+    expect([...store.getState().checkedKinds].sort()).toEqual(['detail', 'main', 'sku', 'video']);
+    expect(prefs.get<string[]>(CHECKED_KINDS_PREF)).toBeUndefined();
+  });
+
   it('偏好里的脏数据被过滤掉', () => {
     const prefs = memoryPrefs();
     prefs.set(CHECKED_KINDS_PREF, ['main', 'oops', 42]);

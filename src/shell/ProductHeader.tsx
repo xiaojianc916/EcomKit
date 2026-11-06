@@ -44,10 +44,13 @@ export function ProductHeader({ snapshot, onCopy }: ProductHeaderProps) {
     >
       <Thumb {...(preview === undefined ? {} : { src: preview })} alt="商品主图" size={48} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        {/* 标题最多两行，超出省略；悬停显示全文（§10.3 ②） */}
-        <Tooltip content={snapshot.title}>
+        {/*
+          标题最多两行，超出省略；悬停显示全文（§10.3 ②）。
+          这里**不能**再写原生 title：Radix 的提示和浏览器自绘的那条会同时冒出来
+          （原生那条还要等 ~1s），用户看到两个灰框。全文交给 Tooltip，且不延迟。
+        */}
+        <Tooltip content={snapshot.title} delayDuration={0}>
           <div
-            title={snapshot.title}
             style={{
               display: '-webkit-box',
               WebkitLineClamp: 2,

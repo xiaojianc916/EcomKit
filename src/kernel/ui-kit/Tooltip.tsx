@@ -16,7 +16,10 @@ import { usePortalTarget } from './PortalRoot';
 export interface TooltipProps {
   content: ReactNode;
   children: ReactNode;
-  /** 悬停多久后出现；默认 300ms */
+  /**
+   * 悬停多久后出现；默认 300ms。
+   * 标题全文这种「内容已经现成、用户就是要看它」的提示传 0（不要延迟）。
+   */
   delayDuration?: number;
   side?: 'top' | 'right' | 'bottom' | 'left';
 }

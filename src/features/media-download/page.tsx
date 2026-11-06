@@ -405,7 +405,12 @@ export function MediaDownloadPanel({
     return out;
   }, [job]);
 
-  const nonEmptyKinds = useMemo(() => KIND_ORDER.filter((k) => counts[k] > 0), [counts]);
+  // 「全选」按快照里实际有素材的类别算：计划里的 counts 只统计**已勾选**的类别，
+  // 全部取消勾选后 counts 全 0，再点「全选」就会传下去一个空数组（看起来像没反应）。
+  const nonEmptyKinds = useMemo(
+    () => KIND_ORDER.filter((k) => (byKind[k]?.length ?? 0) > 0),
+    [byKind],
+  );
 
   /**
    * 传给素材清单的回调全部 useCallback 固定引用：
@@ -644,12 +649,14 @@ export function MediaDownloadSettingsSection({
 
       <div className="ec-field">
         <span className="ec-field__label">详情图最小宽度</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
+        {/* 左对齐贴着上方的标题：整行居中会把 96px 的输入框挤到面板中线附近 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <input
             className="ec-input"
             type="number"
             min={0}
-            style={{ width: 96 }}
+            // flex:none 让这个定宽输入框不被这一行拉伸，96px 就是它最终的宽度
+            style={{ width: 96, flex: 'none' }}
             value={value.detailMinWidth}
             onChange={(e) => patch({ detailMinWidth: Number(e.target.value) || 0 })}
           />

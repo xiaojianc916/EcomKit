@@ -8,6 +8,7 @@ import { IconButton, INLINE_ICON_SIZE, Tooltip } from '../../../kernel/ui-kit';
  *
  * 显示规则：「根文件夹名 \ 商品文件夹」—— 根文件夹名是用户在授权小窗里**真正选中的**
  * 那个目录（浏览器只知道名字），商品文件夹是按模板生成的子目录。
+ * 手填的根目录绝对路径和这个名字对得上时说明两者是同一处，才显示成 D:\test\…（见 saveTargetPath）。
  * 悬停和复制给出完整绝对路径：设置里填了根目录绝对路径就拼上，没填就只给相对部分。
  *
  * 还没有选择目录时显示「还没有选择保存位置」，点击直接打开授权小窗。
@@ -43,13 +44,39 @@ export function fullPathFor(rootPath: string | undefined, relativePath: string):
  * 为什么不用设置里手填的「根目录绝对路径」：那是给「复制完整路径」用的辅助输入，
  * 用户实际用 FSA 选的是哪个文件夹，浏览器只知道它的**名字**（dir.name），
  * 手填的路径完全可能是另一回事 —— 拿它当保存位置显示就是在骗人。
- * 手填路径只在悬停和复制时拼成完整路径（见 fullPathFor）。
+ * 手填路径只有在名字对得上时才拿来显示（见 saveTargetPath），否则仍然悬停和复制才用（见 fullPathFor）。
  */
 export function saveTargetLabel(rootName: string | undefined, relativePath: string): string {
   const name = rootName?.trim() ?? '';
   if (name === '') return relativePath;
   // Windows 资源管理器里看到的层级就是这个形状
   return `${name}\\${relativePath}`;
+}
+
+/** 路径最后一段：手填的 D:\test\ 和浏览器给的文件夹名 test 是同一处的判据 */
+export function baseName(path: string): string {
+  const segments = path.split(/[\\/]+/).filter((segment) => segment !== '');
+  return segments[segments.length - 1] ?? '';
+}
+
+/**
+ * 「保存到」这一行最终显示什么。
+ *
+ * 手填路径的最后一段和浏览器给的文件夹名一致，说明设的就是用户选的那个目录，
+ * 显示完整路径才能看到盘符（D:\test\…）；不一致时仍只显示名字 —— 拿另一个目录的路径冒充保存位置就是骗人。
+ */
+export function saveTargetPath(
+  rootName: string | undefined,
+  relativePath: string,
+  rootPath: string | undefined,
+): string {
+  const root = rootPath?.trim().replace(/[\\/]+$/, '') ?? '';
+  const name = rootName?.trim() ?? '';
+  // 大小写不敏感：Windows 路径本来就不区分大小写
+  if (root !== '' && name !== '' && baseName(root).toLowerCase() === name.toLowerCase()) {
+    return fullPathFor(root, relativePath);
+  }
+  return saveTargetLabel(name, relativePath);
 }
 
 export function SaveBar({ dir, relativePath, rootPath, onOpenGrant, onCopy }: SaveBarProps) {
@@ -90,7 +117,7 @@ export function SaveBar({ dir, relativePath, rootPath, onOpenGrant, onCopy }: Sa
                 direction: 'ltr',
               }}
             >
-              {middleEllipsis(saveTargetLabel(dir.name, relativePath))}
+              {middleEllipsis(saveTargetPath(dir.name, relativePath, rootPath))}
             </span>
           </Tooltip>
           <Tooltip content={copied ? '已复制' : '复制路径'}>

@@ -106,6 +106,9 @@ export function createMediaStore(opts: CreateMediaStoreOptions): MediaStore {
     },
 
     toggleAll(nonEmptyKinds) {
+      // 空数组时 [].every(...) === true，会被当成「全都勾着」去执行清空 ——
+      // 没有可勾的类别时什么都不做，而不是把用户已经勾上的类别清掉。
+      if (nonEmptyKinds.length === 0) return;
       const current = get().checkedKinds;
       const all = nonEmptyKinds.every((k) => current.has(k));
       const next = all ? new Set<AssetKind>() : new Set(nonEmptyKinds);

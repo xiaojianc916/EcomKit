@@ -200,9 +200,11 @@ describe('Panel（§10.3 布局）', () => {
 
   it('商品信息区显示标题和商品 ID', () => {
     renderPanel();
-    expect(
-      screen.getByTitle('夏季新款显瘦连衣裙女小个子法式复古方领泡泡袖碎花裙'),
-    ).toBeInTheDocument();
+    const title = screen.getByText('夏季新款显瘦连衣裙女小个子法式复古方领泡泡袖碎花裙');
+    expect(title).toBeInTheDocument();
+    // 全文提示只走 Radix 的自绘提示框：原生 title 会让悬停同时冒出两个灰框
+    // （浏览器那个还要等 ~1s），这里锁住「不给标题写原生 title」防回归。
+    expect(title).not.toHaveAttribute('title');
     expect(screen.getByText('ID 482319937501')).toBeInTheDocument();
   });
 
@@ -369,8 +371,10 @@ describe('SaveBar 路径处理（§10.5 复制路径）', () => {
 });
 
 describe('ProductHeader（§10.3 ②）', () => {
-  it('标题用 title 属性给全文（悬停显示）', () => {
-    render(<ProductHeader snapshot={snapshot()} onCopy={vi.fn()} />);
-    expect(screen.getByTitle(snapshot().title)).toBeInTheDocument();
+  it('标题文字可见，且整块不再带原生 title（悬停只能出一个提示框）', () => {
+    const { container } = render(<ProductHeader snapshot={snapshot()} onCopy={vi.fn()} />);
+    expect(screen.getByText(snapshot().title)).toBeInTheDocument();
+    // 全文由 <Tooltip>（黑色自绘那个）负责；再写 title 就会多出浏览器原生灰框。
+    expect(container.querySelector('[title]')).toBeNull();
   });
 });

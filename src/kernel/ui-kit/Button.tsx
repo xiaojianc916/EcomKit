@@ -56,7 +56,12 @@ export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>
   children: ReactNode;
 }
 
-/** 图标按钮：⚙ ⟩ ⧉ 这类。label 同时用作 aria-label */
+/**
+ * 图标按钮：⚙ ⟩ ⧉ 这类。label 同时用作 aria-label。
+ *
+ * **不写原生 title**：现有调用点都在 <Tooltip> 里，两套提示会同时出现
+ * （原生那条慢 ~1s，画的是浏览器自己的灰框）。可访问性靠 aria-label，不受影响。
+ */
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
   { label, children, type = 'button', className, ...rest },
   ref,
@@ -66,7 +71,6 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       ref={ref}
       type={type}
       aria-label={label}
-      title={label}
       className={`ec-icon-btn${className ? ` ${className}` : ''}`}
       {...rest}
     >

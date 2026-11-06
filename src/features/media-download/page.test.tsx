@@ -181,6 +181,43 @@ describe('MediaDownloadPanel 组装（§8.6）', () => {
     expect(payload.selection.kinds).toEqual(['main']);
   });
 
+  it('全不选后再点全选，能恢复到原来的勾选（此前点了没反应）', () => {
+    const spy = makeApi();
+    renderPanel(spy);
+    const checked = (name: string): boolean =>
+      (screen.getByRole('checkbox', { name }) as HTMLElement).getAttribute('aria-checked') ===
+      'true';
+
+    fireEvent.click(screen.getByRole('button', { name: '全不选' }));
+    expect(checked('下载主图')).toBe(false);
+    expect(checked('下载详情图')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    // 有素材的两类恢复勾选；没有素材的 sku/video 不参与
+    expect(checked('下载主图')).toBe(true);
+    expect(checked('下载详情图')).toBe(true);
+    expect(screen.getByRole('button', { name: '全不选' })).toBeInTheDocument();
+  });
+
+  it('只取消一类后点全选，只补回这一类，不把其余勾选清掉', () => {
+    const spy = makeApi();
+    renderPanel(spy);
+    const checked = (name: string): boolean =>
+      (screen.getByRole('checkbox', { name }) as HTMLElement).getAttribute('aria-checked') ===
+      'true';
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '下载主图' }));
+    expect(checked('下载主图')).toBe(false);
+    expect(checked('下载详情图')).toBe(true);
+
+    // 旧实现的 nonEmptyKinds 来自「计划里已勾选类别的计数」，这时只剩 detail，
+    // 于是 toggleAll(['detail']) 判成「全都勾着」→ 走清空分支，detail 也一起被清掉。
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    expect(checked('下载主图')).toBe(true);
+    expect(checked('下载详情图')).toBe(true);
+    expect(screen.getByRole('button', { name: '全不选' })).toBeInTheDocument();
+  });
+
   it('取消勾选视频后主按钮文案变成部分类别（§10.4 第 3 行）', () => {
     const spy = makeApi();
     renderPanel(spy);
