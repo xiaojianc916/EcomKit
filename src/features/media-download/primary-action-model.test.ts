@@ -47,7 +47,6 @@ function state(patch: Partial<PrimaryActionState> = {}): PrimaryActionState {
     job: null,
     otherTabJob: null,
     queuedAhead: 0,
-    history: null,
     grantPending: false,
     now: NOW,
     ...patch,
@@ -99,13 +98,8 @@ describe('§10.4 主按钮第 4 行：挑选模式', () => {
     expect(m.action.kind).toBe('submit');
   });
 
-  it('挑选模式优先于历史记录里的“已全部下载”', () => {
-    const m = primaryActionModel(
-      state({
-        selectedKeys: ['k1'],
-        history: { lastAt: NOW - 86_400_000, missingCount: 0 },
-      }),
-    );
+  it('挑选模式优先于“下载 N 个文件”的整类下载', () => {
+    const m = primaryActionModel(state({ selectedKeys: ['k1'] }));
     expect(m.label).toBe('下载所选 1 个');
   });
 });
@@ -219,7 +213,7 @@ describe('§10.4 主按钮第 12 行：下载完成', () => {
     expect(m.meta).toEqual(['跳过 0 个 · 12.4 MB · 用时 3.2 秒']);
   });
 
-  it('3 秒后不再显示完成文案，回落到历史/就绪', () => {
+  it('3 秒后不再显示完成文案，回落到就绪', () => {
     const job = makeJob({
       status: 'done',
       done: 48,
@@ -279,31 +273,7 @@ describe('§10.4 主按钮第 15 行：中断', () => {
   });
 });
 
-describe('§10.4 主按钮第 16 行：有历史记录，缺文件', () => {
-  it('“补全 3 个文件”，说明上次下载时间', () => {
-    const m = primaryActionModel(
-      state({ history: { lastAt: new Date(2026, 10, 3, 14, 20).getTime(), missingCount: 3 } }),
-    );
-    expect(m.label).toBe('补全 3 个文件');
-    expect(m.variant).toBe('accent');
-    expect(m.meta).toEqual(['上次下载于 11月3日 14:20']);
-  });
-});
-
-describe('§10.4 主按钮第 17 行：有历史记录，已经齐全', () => {
-  it('“已全部下载”，中性色但可点，点击做增量检查', () => {
-    const m = primaryActionModel(
-      state({ history: { lastAt: new Date(2026, 10, 3, 14, 20).getTime(), missingCount: 0 } }),
-    );
-    expect(m.label).toBe('已全部下载');
-    expect(m.variant).toBe('neutral');
-    expect(m.disabled).toBe(false);
-    expect(m.action.kind).toBe('verify');
-    expect(m.meta).toEqual(['上次下载于 11月3日 14:20 · 点击可重新检查']);
-  });
-});
-
-describe('§10.4 主按钮第 18 行：同一商品正在其他标签页下载', () => {
+describe('§10.4 主按钮第 16 行：同一商品正在其他标签页下载', () => {
   it('“正在其他标签页下载 23/48”', () => {
     const m = primaryActionModel(state({ otherTabJob: makeJob({ id: 'job-other', tabId: 99 }) }));
     expect(m.label).toBe('正在其他标签页下载 23/48');
@@ -320,10 +290,8 @@ describe('§10.4 主按钮第 18 行：同一商品正在其他标签页下载',
 });
 
 describe('优先级细节', () => {
-  it('目录 needs-grant 优先于历史记录（目录没授权时读不到历史）', () => {
-    const m = primaryActionModel(
-      state({ dir: 'needs-grant', history: { lastAt: NOW, missingCount: 2 } }),
-    );
+  it('目录 needs-grant 优先于挑选模式（目录没授权时下载必然失败）', () => {
+    const m = primaryActionModel(state({ dir: 'needs-grant', selectedKeys: ['k1', 'k2'] }));
     expect(m.label).toBe('允许访问并下载');
   });
 

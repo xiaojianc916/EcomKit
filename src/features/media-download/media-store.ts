@@ -1,6 +1,5 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type { JobRecord } from '../../kernel/jobs/types';
-import type { HistoryState } from '../../kernel/messaging/protocol';
 import type { AssetKind } from '../../kernel/model/asset';
 
 /**
@@ -13,7 +12,6 @@ import type { AssetKind } from '../../kernel/model/asset';
  *   换商品就该清空；持久化会让用户下次打开时莫名其妙少下几张。
  * - **展开的类别 → 不持久化**：换个商品还展开着上次那一类没有意义。
  * - **当前任务 → 不持久化**：真值在 bg/offscreen，这里只是镜像。
- * - **历史 → 不持久化**：每次挂载面板时重新向 service 要（§9.11）。
  *
  * 持久化的那一项通过注入的 PrefsPort 写，不在这个模块里碰 chrome.storage，
  * 这样组件测试和单测都能用内存实现。
@@ -37,8 +35,6 @@ export interface MediaStoreState {
   expandedKind: AssetKind | null;
   /** 当前商品的任务（镜像，真值在 bg/offscreen） */
   job: JobRecord | null;
-  /** 历史记录；目录不是 ready 时为 null（§9.11） */
-  history: HistoryState | null;
   /** 是否展开失败列表（§10.5 失败详情，面板内展开，不用弹窗） */
   failuresOpen: boolean;
 }
@@ -57,7 +53,6 @@ export interface MediaStoreActions {
   clearKindSelection(): void;
   expand(kind: AssetKind | null): void;
   setJob(job: JobRecord | null): void;
-  setHistory(history: HistoryState | null): void;
   setFailuresOpen(open: boolean): void;
   /** 进入挑选模式：从按类别下载转成按单张下载 */
   enterPicking(keys: Iterable<string>): void;
@@ -93,7 +88,6 @@ export function createMediaStore(opts: CreateMediaStoreOptions): MediaStore {
     selectedKeys: new Set<string>(),
     expandedKind: null,
     job: null,
-    history: null,
     failuresOpen: false,
 
     toggleKind(kind) {
@@ -151,10 +145,6 @@ export function createMediaStore(opts: CreateMediaStoreOptions): MediaStore {
 
     setJob(job) {
       set({ job });
-    },
-
-    setHistory(history) {
-      set({ history });
     },
 
     setFailuresOpen(open) {

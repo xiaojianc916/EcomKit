@@ -65,8 +65,9 @@ async function boot(): Promise<Booted> {
   // 保存方式决定用哪个 sink（§11、§9.13）；E2E 用内存 sink 让 Playwright 能校验目录树
   const isE2E = Boolean((globalThis as { __ECBOX_E2E__?: boolean }).__ECBOX_E2E__);
   /**
-   * downloads 模式没有 .ecbox.json 的读能力，文件记录只能落在 IndexedDB 的 downloads 表里，
-   * 而且**必须跨重启保留** —— 否则每次重开浏览器，增量下载都退化成全量重下。
+   * downloads 模式拿不到真实目录，判断「这个文件下过没有」只能靠自己的记录，
+   * 所以记录落在 IndexedDB 的 downloads 表里，而且**必须跨重启保留** ——
+   * 否则每次重开浏览器，增量下载都退化成全量重下。
    * 旧实现既没传 initialFiles 也没接 persist，这张表从来就没被用过。
    */
   const sink = isE2E

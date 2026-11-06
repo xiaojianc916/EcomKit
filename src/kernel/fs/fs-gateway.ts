@@ -1,4 +1,3 @@
-import { EcError } from '../errors/ec-error';
 import type { Logger } from '../log/logger';
 import { NAME_LIMITS, nameKey, sanitizeName } from '../naming/sanitize';
 import { createFolderIndex, type FolderIndex, folderIndex } from './folder-index';
@@ -9,19 +8,17 @@ import type { DirEntry, FsGateway, FsSink, RelPath, WriteFileOptions, WriteResul
  * 写入网关（方案 §9.3、§9.6）。
  *
  * 职责：把「商品 → 文件夹」这件事固定下来，让功能层完全不用关心当前用的是
- * FSA 还是 downloads 兜底（§9.13）。功能层只说「给这个商品写 主图/01.jpg」。
+ * FSA 还是 downloads 兜底（§9.13）。功能层只说「给这个商品写 主图/主图01.jpg」。
  *
  * 商品文件夹定位的三步（ADR-6）：
  *   1. 查索引；
- *   2. 索引没有（或文件夹被删/改名）→ 扫平台目录下以 `_商品ID` 结尾的文件夹，取最近修改的一个；
+ *   2. 索引没有（或文件夹被删/改名）→ 扫**根目录**下以 `_商品ID` 结尾的文件夹，取最近修改的一个；
  *   3. 都没有 → 按模板新建，并回写索引。
+ *
+ * 为什么扫根目录、不再有平台目录层：默认模板是 `{platform}_商品ID_{id}`，
+ * 商品文件夹名本身就带了平台（拼多多_商品ID_1019084314929）。外面再套一层「拼多多」
+ * 只会得到 根目录/拼多多/拼多多_商品ID_… 这种半截重复，用户还要多点开一层。
  */
-
-/** 商品文件夹的定位结果（不创建目录） */
-export interface FoundFolder {
-  dir: RelPath;
-  folderName: string;
-}
 
 export interface FsGatewayOptions {
   sink: FsSink;
@@ -32,7 +29,7 @@ export interface FsGatewayOptions {
 }
 
 /** 商品 ID 后缀：文件夹名以它结尾就认为是同一个商品（大小写不敏感，§9.3） */
-const MAX_PATH_SEGMENTS = 6;
+const ROOT: RelPath = [];
 
 export function createFsGateway(opts: FsGatewayOptions): FsGateway {
   // 可变：设置里切换「自选文件夹 / 浏览器下载目录」时替换（§9.13、§11）
@@ -40,34 +37,36 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
   const index = opts.index ?? folderIndex();
   const loadRootId = opts.rootId ?? (() => handleStore().rootId());
 
-  async function _requireRootId(): Promise<string> {
-    const id = await loadRootId();
-    if (!id) throw new EcError('DIR_UNSET');
-    return id;
-  }
-
-  /** 平台文件夹名按 §9.2 限制 10 字素；用去重后的名字保证两次调用一致 */
-  function platformSegment(platform: string): string {
-    return sanitizeName(platform, { maxLength: NAME_LIMITS.platform });
-  }
-
   /**
-   * 步骤 2：扫平台目录下以 `_商品ID` 结尾的文件夹。
-   * 平台目录下可能有几千个子目录，所以只在索引没命中时才扫（§9.3 的取舍说明）。
+   * 步骤 2：扫根目录下以 `_商品ID` 结尾的文件夹。
+   *
+   * 根目录下可能有几百个商品文件夹，所以只在索引没命中时才扫（§9.3 的取舍说明）。
+   * 用 endsWith 而不是 includes：_123 不能匹配到 _1234 那个商品。
    */
-  async function scanByIdSuffix(platformDir: RelPath, productId: string): Promise<string | null> {
+  async function scanByIdSuffix(productId: string): Promise<string | null> {
     const suffix = `_${productId.toLowerCase()}`;
     let entries: DirEntry[];
     try {
-      entries = await sink.listDir(platformDir);
+      entries = await sink.listDir(ROOT);
     } catch {
-      // 目录还不存在（第一次下载）或者不可读 → 当作没找到
+      // 根目录还没就绪（第一次下载 / 没授权）→ 当作没找到
       return null;
     }
     const matches = entries
       .filter((e) => e.kind === 'directory' && nameKey(e.name).endsWith(suffix))
       .sort((a, b) => (b.lastModified ?? 0) - (a.lastModified ?? 0));
     return matches[0]?.name ?? null;
+  }
+
+  /** 索引里记着的名字是否还真的在盘上（用户可能手动删了它） */
+  async function stillOnDisk(folderName: string): Promise<boolean> {
+    try {
+      const entries = await sink.listDir(ROOT);
+      return entries.some((e) => e.kind === 'directory' && nameKey(e.name) === nameKey(folderName));
+    } catch {
+      // 根目录读不了 → 当作不在，走后面的重建流程
+      return false;
+    }
   }
 
   const gateway: FsGateway = {
@@ -94,87 +93,27 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
      */
     async resolveProductFolder({ platform, productId, preferredName }) {
       const rootId = await loadRootId().catch(() => null);
-      const platformName = platformSegment(platform);
-      const platformDir: RelPath = [platformName];
 
-      const cached = rootId === null ? null : await index.get(rootId, platform, productId);
-      if (cached) {
-        // 索引命中还要确认文件夹真的还在：用户可能手动删了它
-        try {
-          const entries = await sink.listDir(platformDir);
-          const stillThere = entries.some(
-            (e) => e.kind === 'directory' && nameKey(e.name) === nameKey(cached.folderName),
-          );
-          if (stillThere) {
-            if (rootId !== null) await index.set(rootId, platform, productId, cached.folderName);
-            return {
-              dir: [platformName, cached.folderName],
-              folderName: cached.folderName,
-              platformDir,
-            };
-          }
-        } catch {
-          // 平台目录都读不了 → 走后面的重建流程
+      if (rootId !== null) {
+        const cached = await index.get(rootId, platform, productId);
+        if (cached && (await stillOnDisk(cached.folderName))) {
+          // 刷新 lastAt：索引里这个字段就是「最后一次使用」，诊断和清理都靠它
+          await index.set(rootId, platform, productId, cached.folderName);
+          return { dir: [cached.folderName], folderName: cached.folderName };
         }
       }
 
-      const found = await scanByIdSuffix(platformDir, productId);
+      const found = await scanByIdSuffix(productId);
       if (found) {
         if (rootId !== null) await index.set(rootId, platform, productId, found);
-        return { dir: [platformName, found], folderName: found, platformDir };
+        return { dir: [found], folderName: found };
       }
 
       // 步骤 3：按模板新建。模板保证带 _ID 后缀（§9.1），所以下次能被扫回来
       const folderName = sanitizeName(preferredName, { maxLength: NAME_LIMITS.folder });
-      await sink.ensureDir([platformName, folderName]);
+      await sink.ensureDir([folderName]);
       if (rootId !== null) await index.set(rootId, platform, productId, folderName);
-      return { dir: [platformName, folderName], folderName, platformDir };
-    },
-
-    /**
-     * 只查不建：找这个商品已经存在的文件夹（历史/增量查询用）。
-     * 和 resolveProductFolder 共用同一套定位规则（索引 → `_ID` 后缀扫描），
-     * 但**绝不会**创建目录 —— 用户只是想看看上次下过什么，不该因此多出空文件夹。
-     */
-    async findProductFolder({ platform, productId }) {
-      const rootId = await loadRootId().catch(() => null);
-      const platformName = platformSegment(platform);
-      const platformDir: RelPath = [platformName];
-
-      if (rootId !== null) {
-        const cached = await index.get(rootId, platform, productId);
-        if (cached) {
-          try {
-            const entries = await sink.listDir(platformDir);
-            const stillThere = entries.some(
-              (e) => e.kind === 'directory' && nameKey(e.name) === nameKey(cached.folderName),
-            );
-            if (stillThere)
-              return { dir: [platformName, cached.folderName], folderName: cached.folderName };
-          } catch {
-            // 平台目录读不了 → 当作没找到
-          }
-        }
-      }
-
-      const found = await scanByIdSuffix(platformDir, productId);
-      if (found) return { dir: [platformName, found], folderName: found };
-      return null;
-    },
-
-    async ensurePlatformDir(platform) {
-      const platformName = platformSegment(platform);
-      await sink.ensureDir([platformName]);
-      return [platformName];
-    },
-
-    async ensureSubdir(parent, name) {
-      const segment = sanitizeName(name, { maxLength: NAME_LIMITS.subdir });
-      const next = [...parent, segment];
-      // §9.2「相对路径合计 ≤ 120」：超了就只保留最后几段，避免 MAX_PATH 问题
-      const trimmed = next.length > MAX_PATH_SEGMENTS ? next.slice(-MAX_PATH_SEGMENTS) : next;
-      await sink.ensureDir(trimmed);
-      return trimmed;
+      return { dir: [folderName], folderName };
     },
 
     async writeFile(
@@ -187,31 +126,12 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
       return sink.writeFile(dir, name, data, signal, opts);
     },
 
-    async readJson<T>(dir: RelPath, name: string): Promise<T | null> {
-      const text = await sink.readText(dir, name);
-      if (text === null) return null;
-      try {
-        return JSON.parse(text) as T;
-      } catch {
-        // 解析失败交给调用方处理（§9.11：改名保留现场后按「没有记录」处理）
-        throw new EcError('INTERNAL', { reason: 'json-parse-failed' });
-      }
-    },
-
-    async writeJson(dir, name, value): Promise<void> {
-      await sink.writeText(dir, name, `${JSON.stringify(value, null, 2)}\n`);
-    },
-
     async readText(dir, name): Promise<string | null> {
       return sink.readText(dir, name);
     },
 
     async writeText(dir, name, text): Promise<void> {
       await sink.writeText(dir, name, text);
-    },
-
-    async rename(dir, from, to): Promise<void> {
-      await sink.rename(dir, from, to);
     },
 
     async exists(dir, name): Promise<number | null> {

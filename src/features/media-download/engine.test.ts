@@ -114,7 +114,7 @@ describe('media-download engine：页面载荷契约', () => {
     expect(MediaDownloadPayloadSchema.safeParse(payload).success).toBe(true);
     // 关键字段一个都不能少
     expect(payload.platformDisplayName).toBe('拼多多');
-    expect(payload.settings.folderTemplate).toBe('{title:30}_{id}');
+    expect(payload.settings.folderTemplate).toBe('{platform}_商品ID_{id}');
   });
 
   it('缺 platformDisplayName 的旧载荷会被拒绝，而不是静默失败', () => {
@@ -126,7 +126,7 @@ describe('media-download engine：页面载荷契约', () => {
 });
 
 describe('media-download engine：落盘结构（§9.1）', () => {
-  it('文件落在 平台/商品/类别 目录下，不是商品根目录', async () => {
+  it('根目录下直接是 平台_商品ID_ID，再下面才是 主图/详情图', async () => {
     const { sink, runner } = setup();
     const payload = payloadOf();
     await runner.enqueue(
@@ -143,31 +143,33 @@ describe('media-download engine：落盘结构（§9.1）', () => {
     const files = await pathsOf(sink);
     const images = files.filter((f) => f.endsWith('.png'));
     expect(images.length).toBe(3);
-    // 主图必须在「主图」子目录里，详情图在「详情图」里
+    // memory sink 的 rootName 本身不算路径段，第一段就是商品文件夹
+    for (const image of images) expect(image.split('/')[0]).toBe('拼多多_商品ID_733110622897');
+    // 主图在「主图」子目录里，详情图在「详情图」里
     expect(images.filter((f) => f.includes('/主图/'))).toHaveLength(2);
     expect(images.filter((f) => f.includes('/详情图/'))).toHaveLength(1);
-    // 平台目录和商品目录都要在
-    // memory sink 的 rootName 本身不算路径段，第一段就是平台目录
-    expect(images.every((f) => f.startsWith('拼多多/'))).toBe(true);
+    // 文件名是 主图01 / 详情图01，不是光秃秃的 01
+    expect(images.map((f) => f.split('/').at(-1)).sort()).toEqual([
+      '主图01.png',
+      '主图02.png',
+      '详情图01.png',
+    ]);
   });
 
-  it('写完 .ecbox.json 和 商品信息.txt', async () => {
+  it('不写任何侧录文件：既没有 .ecbox.json 也没有 商品信息.txt', async () => {
     const { sink, runner } = setup();
     const payload = payloadOf();
     await runner.enqueue(
-      createJobRecord({
-        id: 'j1',
-        type: 'media-download',
-        dedupeKey: 'k',
-        payload,
-      }),
+      createJobRecord({ id: 'j1', type: 'media-download', dedupeKey: 'k', payload }),
       payload,
     );
     await runner.idle();
 
     const files = await pathsOf(sink);
-    expect(files.some((f) => f.endsWith('/.ecbox.json'))).toBe(true);
-    expect(files.some((f) => f.endsWith('/商品信息.txt'))).toBe(true);
+    expect(files.some((f) => f.endsWith('.json'))).toBe(false);
+    expect(files.some((f) => f.endsWith('.txt'))).toBe(false);
+    // 整棵树只有图片，一个多余文件都没有
+    expect(files.every((f) => f.endsWith('.png'))).toBe(true);
   });
 
   it('同一商品重复下载：第二次全部跳过，不产生 (2) 副本（§9.11）', async () => {
@@ -218,10 +220,10 @@ describe('media-download engine：落盘结构（§9.1）', () => {
     await runner.idle();
 
     const files = await pathsOf(sink);
-    const productDirs = new Set(
-      files.filter((f) => f.startsWith('拼多多/')).map((f) => f.split('/')[1]),
-    );
+    // 第一段就是商品文件夹：改标题不能再造出第二个
+    const productDirs = new Set(files.map((f) => f.split('/')[0]));
     expect(productDirs.size, [...productDirs].join(' | ')).toBe(1);
+    expect([...productDirs][0]).toBe('拼多多_商品ID_733110622897');
   });
 });
 
@@ -422,18 +424,19 @@ describe('media-download engine：内容判定（§9.8、§9.9）', () => {
   });
 });
 
-describe('media-download engine：取消（§9.11）', () => {
-  it('取消后仍然写 .ecbox.json，已落盘的文件有记录', async () => {
+describe('media-download engine：取消后续下（§9.11）', () => {
+  it('取消后继续下载只补没下完的，已落盘的文件不产生 (2) 副本', async () => {
     const sink = createMemorySink();
     const gateway = createFsGateway({ sink });
-    // 第一个文件慢一点，保证取消发生在中途
+    // 每个文件都慢一点，保证取消发生在中途
+    let delay = 15;
     const runner = createJobRunner({
       gateway,
       jobTypes: [mediaDownloadJobType],
       concurrency: 1,
       net: {
         async fetchWithFallback() {
-          await new Promise((r) => setTimeout(r, 15));
+          await new Promise((r) => setTimeout(r, delay));
           return new Response(PNG, { status: 200 });
         },
         async fetchStream() {
@@ -447,21 +450,30 @@ describe('media-download engine：取消（§9.11）', () => {
     });
     const payload = payloadOf();
     await runner.enqueue(
-      createJobRecord({
-        id: 'j1',
-        type: 'media-download',
-        dedupeKey: 'k',
-        payload,
-      }),
+      createJobRecord({ id: 'j1', type: 'media-download', dedupeKey: 'k', payload }),
       payload,
     );
     await new Promise((r) => setTimeout(r, 20));
     runner.cancel('j1');
     await runner.idle();
-
     expect(runner.get('j1')?.status).toBe('canceled');
-    const files = await pathsOf(sink);
-    const manifest = files.find((f) => f.endsWith('.ecbox.json'));
-    expect(manifest, '取消后也必须留下清单，否则继续下载会生成 (2) 副本').toBeTruthy();
+
+    // 增量判断靠「同名文件已在盘上」，不依赖任何清单文件
+    const first = (await pathsOf(sink)).filter((f) => f.endsWith('.png'));
+    expect(first.length, '取消前应该至少写完一个').toBeGreaterThan(0);
+
+    delay = 0;
+    await runner.enqueue(
+      createJobRecord({ id: 'j2', type: 'media-download', dedupeKey: 'k', payload }),
+      payload,
+    );
+    await runner.idle();
+
+    const record = runner.get('j2');
+    expect(record?.status, JSON.stringify(record?.failed)).toBe('done');
+    expect(record?.skipped, '已落盘的必须跳过').toBe(first.length);
+    const all = (await pathsOf(sink)).filter((f) => f.endsWith('.png'));
+    expect(all).toHaveLength(3);
+    expect(all.some((f) => f.includes('(2)'))).toBe(false);
   });
 });

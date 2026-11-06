@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatCount, formatDateTime, formatDuration } from './format';
+import { formatBytes, formatCount, formatDuration } from './format';
 
 describe('formatBytes', () => {
   it('小于 1KB 用字节', () => {
@@ -38,26 +38,6 @@ describe('formatDuration', () => {
   it('超过一分钟用“分 秒”', () => {
     expect(formatDuration(65_000)).toBe('1 分 5 秒');
     expect(formatDuration(120_000)).toBe('2 分');
-  });
-});
-
-describe('formatDateTime', () => {
-  it('同年只显示月日和时分', () => {
-    const now = new Date(2026, 10, 5, 9, 0).getTime();
-    const at = new Date(2026, 10, 3, 14, 20).getTime();
-    expect(formatDateTime(at, now)).toBe('11月3日 14:20');
-  });
-
-  it('跨年带年份', () => {
-    const now = new Date(2026, 0, 5, 9, 0).getTime();
-    const at = new Date(2025, 10, 3, 14, 20).getTime();
-    expect(formatDateTime(at, now)).toBe('2025年11月3日 14:20');
-  });
-
-  it('个位小时补零', () => {
-    const now = new Date(2026, 10, 5, 9, 0).getTime();
-    const at = new Date(2026, 10, 3, 8, 5).getTime();
-    expect(formatDateTime(at, now)).toBe('11月3日 08:05');
   });
 });
 

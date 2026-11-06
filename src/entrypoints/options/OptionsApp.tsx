@@ -126,7 +126,7 @@ function SaveSection({
   return (
     <>
       <h1 className="opt__h">保存位置</h1>
-      <p className="opt__desc">素材会按「平台 / 商品 / 类别」归档到你选择的文件夹。</p>
+      <p className="opt__desc">素材会按「商品 / 类别」归档到你选择的文件夹。</p>
 
       <div className="opt__field">
         <span className="opt__label">保存方式</span>
@@ -223,7 +223,7 @@ function NamingSection() {
  * 「素材」分组：直接渲染功能自己的 SettingsSection（§8.5 插槽）。
  *
  * 旧实现这里只有一段说明文字，`PageFeature.SettingsSection` 全仓库无人使用 ——
- * 于是「转 JPG / 生成商品信息.txt / 视频封面 / 详情图最小宽度 / 子文件夹名」
+ * 于是「转 JPG / 视频封面 / 详情图最小宽度 / 子文件夹名」
  * 这些设置项**在界面上根本没有入口**，用户只能接受默认值。
  */
 function MediaSection() {
@@ -426,7 +426,13 @@ function AboutSection() {
   );
 }
 
-/** 模板预览用示例商品（§10.8：模板下面用示例商品实时预览完整路径） */
+/**
+ * 模板预览用示例商品（§10.8：模板下面用示例商品实时预览完整路径）。
+ *
+ * 根目录下直接就是商品文件夹，外面**没有平台层** —— 默认模板
+ * `{platform}_商品ID_{id}` 已经把平台写进文件夹名里了，预览再套一层「拼多多 ･」
+ * 会让用户以为实际会多建一级目录。
+ */
 function renderPreview(template: string): string {
   const sample: Record<string, string> = {
     platform: '拼多多',
@@ -443,5 +449,5 @@ function renderPreview(template: string): string {
           .join('')
       : v;
   });
-  return `电商素材 ･ 拼多多 ･ ${folder}`;
+  return `电商素材 ･ ${folder}`;
 }

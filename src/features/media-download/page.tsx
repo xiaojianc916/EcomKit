@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type { ErrorCode } from '../../kernel/errors/codes';
 import type { JobRecord } from '../../kernel/jobs/types';
-import type { HistoryState } from '../../kernel/messaging/protocol';
 import type { AssetKind } from '../../kernel/model/asset';
 import type { ProductSnapshot } from '../../kernel/model/product';
 import type { PageApi, PageFeature, PanelProps, QuickAction } from '../types';
@@ -43,7 +42,7 @@ export { PLATFORM_NAMES, platformDisplayName, toPlannerSettings } from './payloa
 
 /**
  * ⑤ 保存位置的相对路径预览。用 planner 算，保证预览的名字和真正落盘的名字一致
- * （模板截断、清洗、按平台分文件夹都由同一处决定）。
+ * （模板渲染、截断、清洗都由同一处决定）。
  */
 export function previewFolderPath(plan: { folder: string[] }): string {
   // 用反斜杠拼接：Windows 资源管理器地址栏里就是这个形状（§10.5 复制路径）
@@ -79,7 +78,6 @@ const selectCheckedKinds = (s: MediaStoreState): Set<AssetKind> => s.checkedKind
 const selectSelectedKeys = (s: MediaStoreState): Set<string> => s.selectedKeys;
 const selectExpandedKind = (s: MediaStoreState): AssetKind | null => s.expandedKind;
 const selectJob = (s: MediaStoreState): JobRecord | null => s.job;
-const selectHistory = (s: MediaStoreState): HistoryState | null => s.history;
 const selectFailuresOpen = (s: MediaStoreState): boolean => s.failuresOpen;
 
 /**
@@ -131,7 +129,6 @@ export function MediaDownloadPanel({
   const selectedKeys = useStore(store, selectSelectedKeys);
   const expandedKind = useStore(store, selectExpandedKind);
   const job = useStore(store, selectJob);
-  const history = useStore(store, selectHistory);
   const failuresOpen = useStore(store, selectFailuresOpen);
 
   const [now, setNow] = useState(() => Date.now());
@@ -148,17 +145,17 @@ export function MediaDownloadPanel({
   const [grantPending, setGrantPending] = useState(false);
 
   const byKind = useMemo(() => groupAssetsByKind(snapshot.assets), [snapshot.assets]);
-  // 这两个换算以前在 counts / history / folderPreview 里各做一次，现在只做一次
+  // 这两个换算以前在 counts / folderPreview 里各做一次，现在只做一次
   const plannerSettings = useMemo(() => toPlannerSettings(settings), [settings]);
   const platformName = useMemo(() => platformDisplayName(snapshot.platform), [snapshot.platform]);
   const planDay = localDayStart(now);
 
   /**
-   * 「按类别全下」的计划：主按钮数量、保存路径预览、历史查询三处共用一份。
+   * 「按类别全下」的计划：主按钮数量和保存路径预览共用一份。
    *
-   * 旧实现调了 3 次 planDownload（counts / history / folderPreview），每次都把整份计划
-   * （几百条 WorkItem，含文件名清洗、模板渲染、字素截断）从头算一遍 —— 而这三份结果
-   * 除了挑选模式下的 counts 之外完全一样。合并成一次 useMemo 后，只在快照 / 勾选 /
+   * 旧实现为这两处各调一次 planDownload，每次都把整份计划
+   * （几百条 WorkItem，含文件名清洗、模板渲染、字素截断）从头算一遍 —— 两份结果完全一样，
+   * 而挑选模式下 counts 用的是另一份计划。合并成一次 useMemo 后，只在快照 / 勾选 /
    * 设置 / 日期真正变化时才算。
    *
    * 计划算不出来（模板缺 {id} 等）时返回 null，由调用方各自退回原行为。
@@ -245,37 +242,6 @@ export function MediaDownloadPanel({
     });
   }, [api, dedupeKey, store]);
 
-  // 历史记录（§9.11）：目录不是 ready 时不读，避免触发授权。
-  // 带上 platform 和当前快照的 itemKey：引擎要靠它们算出「上次下过哪些、还缺几个」。
-  useEffect(() => {
-    if (dir.status !== 'ready' || planForKinds === null) {
-      store.getState().setHistory(null);
-      return;
-    }
-    let alive = true;
-    void (async () => {
-      try {
-        /**
-         * 期望的 itemKey 必须来自**真实的下载计划**，不能是快照里的全部素材：
-         * detailMinWidth 过滤掉的、去重掉的素材根本不会被下载，
-         * 拿它们当期望会让「补全 N 个文件」永远清不掉。
-         */
-        const raw = await api.call('history.get', {
-          platform: snapshot.platform,
-          productId: snapshot.productId,
-          itemKeys: planForKinds.items.map((item) => item.itemKey),
-        });
-        if (alive) store.getState().setHistory((raw as HistoryState | null) ?? null);
-      } catch {
-        // 历史读不到不影响下载，静默
-        if (alive) store.getState().setHistory(null);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [api, dir.status, snapshot.platform, snapshot.productId, planForKinds, store]);
-
   // 目录一旦可用（授权完成 / 用户换好目录），就不再算「等授权」
   useEffect(() => {
     if (dir.status === 'ready') {
@@ -296,8 +262,6 @@ export function MediaDownloadPanel({
     // 需要它们时必须先有「跨标签页任务查询」和「授权小窗的 pending 回执」，见 docs/audit-c §C3。
     otherTabJob: null,
     queuedAhead: 0,
-    history:
-      history === null ? null : { lastAt: history.lastAt, missingCount: history.missing.length },
     grantPending,
     now,
   };
@@ -390,7 +354,7 @@ export function MediaDownloadPanel({
         return;
       case 'resume':
         // 取消 / 中断后「继续下载」：不是重试失败项，而是**重新提交**同一份选择。
-        // .ecbox.json 会让已完成的文件走「已存在」跳过，所以等于续传（§9.11）。
+        // 已经落盘的文件靠引擎的「同名文件已存在就跳过」自动略过，所以等于续传（§9.11）。
         // 旧实现把 resume 接到了 retryJob 上，没有失败项时 runner 直接返回 null ——
         // 按钮点了什么都不发生。
         submit([...checkedKinds]);
@@ -403,7 +367,8 @@ export function MediaDownloadPanel({
         void retryFailed(job.id);
         return;
       case 'verify':
-        // 「已全部下载」点一下做一次增量检查（§10.4 表下注）
+        // 历史记录没了之后主按钮不会再给出 verify，保留这一支只为兼容旧的 model 值：
+        // 语义和 submit 一样，都是重新提交同一份选择。
         submit([...checkedKinds]);
         return;
       case 'open-grant':
@@ -422,7 +387,7 @@ export function MediaDownloadPanel({
   };
 
   const folderPreview = useMemo(() => {
-    // 模板缺少 {id} 这类错误应该在设置页拦掉；这里退回只显示平台目录
+    // 模板缺少 {id} 这类错误应该在设置页拦掉；这里退回只显示平台名，至少不是空白
     if (planForKinds === null) return platformName;
     return previewFolderPath(planForKinds);
   }, [planForKinds, platformName]);
@@ -619,15 +584,6 @@ export function MediaDownloadSettingsSection({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <input
-          type="checkbox"
-          checked={value.byPlatform}
-          onChange={(e) => patch({ byPlatform: e.target.checked })}
-        />
-        <span>按平台分文件夹</span>
-      </label>
-
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <span>商品文件夹模板</span>
         <input
@@ -674,14 +630,6 @@ export function MediaDownloadSettingsSection({
           onChange={(e) => patch({ toJpeg: e.target.checked })}
         />
         <span>WebP、AVIF 转成 JPG</span>
-      </label>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <input
-          type="checkbox"
-          checked={value.infoTxt}
-          onChange={(e) => patch({ infoTxt: e.target.checked })}
-        />
-        <span>生成 商品信息.txt</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input

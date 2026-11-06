@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { AssetKind } from '../../kernel/model/asset';
 
 /**
- * media-download 的设置项（方案 §11 中 `feature:media-download.*` 九项）。
+ * media-download 的设置项（方案 §11 中 `feature:media-download.*`）。
  *
  * 为什么单独一个文件、而不是直接写在 manifest.ts 里：
  * manifest.ts 必须是纯数据模块（CONTRIBUTING「重要」一节），只能 import type，
@@ -25,14 +25,16 @@ export const OnConflict = z.enum(['rename', 'overwrite', 'skip']);
 export type OnConflict = z.infer<typeof OnConflict>;
 
 export const MediaDownloadSettings = z.object({
-  /** 按平台分文件夹（§9.1） */
-  byPlatform: z.boolean().default(true),
-  /** 商品文件夹模板，必须含 {id}（ADR-6），设置页强制校验 */
-  folderTemplate: z.string().min(1).default('{title:30}_{id}'),
+  /**
+   * 商品文件夹模板，必须含 {id}（ADR-6），设置页强制校验。
+   * 默认 `{platform}_商品ID_{id}`：文件夹名直接带平台和商品 ID，
+   * 所以外面**不再套平台目录**，根目录下就是「拼多多_商品ID_1019084314929」。
+   */
+  folderTemplate: z.string().min(1).default('{platform}_商品ID_{id}'),
   /**
    * 子文件夹名必须互不相同（大小写不敏感，Windows 就是这样）。
    * 主图和详情图都叫「图片」时，两类文件会在同一个目录里互相让路，
-   * 出现 01.webp / 01 (2).webp 这种谁也认不出来的结果。
+   * 出现 主图01.jpg / 主图01 (2).jpg 这种谁也认不出来的结果。
    */
   dirNames: DirNames.prefault({}).superRefine((value, ctx) => {
     const seen = new Map<string, string>();
@@ -55,8 +57,6 @@ export const MediaDownloadSettings = z.object({
   checkedKinds: z.array(AssetKind).default(['main', 'sku', 'detail', 'video']),
   /** WebP / AVIF 转 JPG（§9.8） */
   toJpeg: z.boolean().default(true),
-  /** 生成 商品信息.txt（§9.12） */
-  infoTxt: z.boolean().default(true),
   /** 同时下载视频封面（§9.9） */
   videoCover: z.boolean().default(false),
   /** 详情图最小宽度，低于它的详情图不下载（§11「素材」组） */

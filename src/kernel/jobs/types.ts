@@ -15,7 +15,7 @@ export type JobStatus =
   | 'interrupted';
 
 export interface WorkItem {
-  /** 计划内唯一，也是 .ecbox.json 里的 key */
+  /** 计划内唯一，失败重试和进度行都按它定位 */
   itemKey: string;
   /** UI 上按行分组的键：main / sku / detail / video */
   group: string;

@@ -29,10 +29,10 @@ function fakeDownloads(): DownloadsApi & { records: Map<number, string> } {
 }
 
 describe('downloadPathName（§9.13）', () => {
-  it('拼成「根目录/平台/商品/子目录/文件名」', () => {
-    expect(
-      downloadPathName('电商素材', ['拼多多', '夏季连衣裙_482319937501', '主图'], '01.jpg'),
-    ).toBe('电商素材/拼多多/夏季连衣裙_482319937501/主图/01.jpg');
+  it('拼成「根目录/商品/子目录/文件名」（没有平台目录层）', () => {
+    expect(downloadPathName('电商素材', ['拼多多_商品ID_482319937501', '主图'], '主图01.jpg')).toBe(
+      '电商素材/拼多多_商品ID_482319937501/主图/主图01.jpg',
+    );
   });
 
   it('根目录名按 §9.2 清洗', () => {
@@ -41,6 +41,12 @@ describe('downloadPathName（§9.13）', () => {
 
   it('没有子目录时不出现空段', () => {
     expect(downloadPathName('电商素材', [], 'a.jpg')).toBe('电商素材/a.jpg');
+  });
+
+  it('素材文件名原样保留（不再给点开头的名字补下划线，侧录文件已不存在）', () => {
+    expect(downloadPathName('电商素材', ['商品_1'], '主图01.jpg')).toBe(
+      '电商素材/商品_1/主图01.jpg',
+    );
   });
 });
 
@@ -111,27 +117,28 @@ describe('createDownloadsSink（§9.13）', () => {
   it('listDir 能从内存树推断目录结构', async () => {
     const sink = createDownloadsSink({ downloads: fakeDownloads() });
     const signal = new AbortController().signal;
-    await sink.writeFile(['拼多多', '商品_1', '主图'], '01.jpg', new Blob(['a']), signal);
-    await sink.writeFile(['拼多多', '商品_1'], '商品信息.txt', new Blob(['b']), signal);
-    const entries = await sink.listDir(['拼多多', '商品_1']);
+    await sink.writeFile(['商品_1', '主图'], '主图01.jpg', new Blob(['a']), signal);
+    await sink.writeFile(['商品_1'], '主图01.jpg', new Blob(['b']), signal);
+    const entries = await sink.listDir(['商品_1']);
     expect(entries).toContainEqual({ name: '主图', kind: 'directory' });
-    expect(entries).toContainEqual({ name: '商品信息.txt', kind: 'file' });
+    expect(entries).toContainEqual({ name: '主图01.jpg', kind: 'file' });
   });
 
   it('readText 能读回本会话写过的文本（§9.13 读不回磁盘的已知限制）', async () => {
     const sink = createDownloadsSink({ downloads: fakeDownloads() });
-    await sink.writeText(['拼多多'], '.ecbox.json', '{"v":1}');
-    expect(await sink.readText(['拼多多'], '.ecbox.json')).toBe('{"v":1}');
-    expect(await sink.readText(['拼多多'], '没写过.txt')).toBeNull();
+    await sink.writeText(['商品_1'], 'note.txt', 'hello');
+    expect(await sink.readText(['商品_1'], 'note.txt')).toBe('hello');
+    expect(await sink.readText(['商品_1'], '没写过.txt')).toBeNull();
   });
 
-  it('rename 在内存树里生效', async () => {
+  it('removeFile 从内存树里移除，避免下次 resolveName 又让开', async () => {
     const sink = createDownloadsSink({ downloads: fakeDownloads() });
     const signal = new AbortController().signal;
-    await sink.writeFile(['拼多多'], 'a.json', new Blob(['x']), signal);
-    await sink.rename(['拼多多'], 'a.json', 'a.broken.json');
-    expect(await sink.exists(['拼多多'], 'a.json')).toBeNull();
-    expect(await sink.exists(['拼多多'], 'a.broken.json')).not.toBeNull();
+    await sink.writeFile(['商品_1'], '主图01.jpg', new Blob(['x']), signal);
+    expect(await sink.resolveName(['商品_1'], '主图01', 'jpg')).toBe('主图01 (2).jpg');
+    await sink.removeFile(['商品_1'], '主图01.jpg');
+    expect(await sink.exists(['商品_1'], '主图01.jpg')).toBeNull();
+    expect(await sink.resolveName(['商品_1'], '主图01', 'jpg')).toBe('主图01.jpg');
   });
 
   it('带 sourceUrl 的流直接走直链，不在本地把几百 MB 收进内存', async () => {

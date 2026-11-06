@@ -13,8 +13,10 @@ import { createMemorySink } from './memory';
 /**
  * 取消 → 继续下载（§9.11）。
  *
- * 这是「中断后继续」的核心承诺：已下完的文件不能重下、不能变成 01 (2).jpg。
- * 旧实现有两个坑叠在一起：取消时不写 .ecbox.json（没有记录）+ 继续下载走整单重提，
+ * 这是「中断后继续」的核心承诺：已下完的文件不能重下、不能变成 主图01 (2).jpg。
+ * 判断依据就是**盘上的真实文件**（engine 的 alreadyThere 查同名文件是否存在），
+ * 不再依赖任何侧录文件 —— 商品文件夹里只有素材本身。
+ * 旧实现的两个坑是：取消时不写 .ecbox.json（等于没有记录）+ 继续下载走整单重提，
  * 结果每次取消再继续都会多出一套 (2) 副本。
  */
 
@@ -128,5 +130,13 @@ describe('取消后继续下载（§9.11）', () => {
     const all = (await paths(sink)).filter((f) => f.endsWith('.png'));
     expect(all.some((f) => f.includes('(2)'))).toBe(false);
     expect(all.length).toBe(6);
+
+    // 落盘路径是 商品/类别/文件 三段：根目录下直接就是商品文件夹，中间没有平台目录层
+    for (const file of all) {
+      const segments = file.split('/');
+      expect(segments, file).toHaveLength(3);
+      expect(segments[0], file).toBe('拼多多_商品ID_733110622897');
+      expect(segments[1], file).toBe('详情图');
+    }
   });
 });

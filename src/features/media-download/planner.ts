@@ -15,21 +15,20 @@ import { skuLabelsByImageKey } from './sku-label';
  *
  * 三条硬规则：
  * 1. **编号以整个类别为基准**，不是以本次选中为基准。只勾第 3 张详情图时，
- *    文件名仍然是 `03.jpg`，以后补全序号才不会错乱。
- * 2. **itemKey 在计划里唯一**，并且跨会话稳定（它同时是 .ecbox.json 的主键），
- *    所以用「类别 + 平台素材 key」，不用序号（序号会随素材增删漂移）。
+ *    文件名仍然是 `详情图03.jpg`，以后补全序号才不会错乱。
+ * 2. **itemKey 在计划里唯一**，并且跨会话稳定，所以用「类别 + 平台素材 key」，不用序号
+ *    （序号会随素材增删漂移）。
  * 3. 序号位数按该类别**总量**决定：≤99 补到两位，≥100 补到三位（§9.1）。
+ *
+ * 文件名统一带类别前缀（`主图01` / `详情图01` / `SKU01_杏色` / `视频01`）：
+ * 素材平铺进各自的子文件夹后，光看文件名也知道这一张是什么，不必回到设置里对照目录名。
  */
 
 export interface PlannerSettings {
-  /** 按平台分文件夹（§11 feature:media-download.byPlatform） */
-  byPlatform: boolean;
   /** 商品文件夹模板（§11 feature:media-download.folderTemplate） */
   folderTemplate: string;
   /** 四个子文件夹的名字（§11 feature:media-download.dirNames） */
   dirNames: Record<AssetKind, string>;
-  /** 生成 商品信息.txt（§9.12） */
-  infoTxt: boolean;
   /** 同时下载视频封面（§9.9） */
   videoCover: boolean;
   /** 详情图最小宽度，0 表示不过滤（§11 feature:media-download.detailMinWidth） */
@@ -43,13 +42,10 @@ export interface PlannerSelection {
   keys?: readonly string[];
 }
 
-export type PlanExtra = 'info-txt' | 'folder-manifest';
-
 export interface WritePlan {
-  /** 商品文件夹的相对路径，例如 ['拼多多', '夏季新款…_482319937501'] */
+  /** 商品文件夹的相对路径，例如 ['拼多多_商品ID_482319937501'] */
   folder: string[];
   items: WorkItem[];
-  extras: PlanExtra[];
 }
 
 export interface PlanInput {
@@ -61,6 +57,17 @@ export interface PlanInput {
   /** 生成 {date} 用的时间，测试里固定它 */
   now?: number;
 }
+
+/**
+ * 文件名前缀。和子文件夹名分开写死：SKU 图的文件夹叫「SKU图」，
+ * 但文件名要是 `SKU01_杏色`（商家拿到的表里就是这么叫的），两处一一对应反而更难懂。
+ */
+const FILE_PREFIX: Record<AssetKind, string> = {
+  main: '主图',
+  sku: 'SKU',
+  detail: '详情图',
+  video: '视频',
+};
 
 /** 序号宽度：总数 ≤ 99 两位，≥ 100 三位（§9.1） */
 function padWidth(total: number): number {
@@ -93,19 +100,6 @@ function passesDetailFilter(asset: Asset, minWidth: number, kind: AssetKind): bo
   return asset.width >= minWidth;
 }
 
-/**
- * 视频的文件名（§9.1）：
- * - 主图视频 → `主图视频`（不带序号，一个商品最多一个）
- * - 其他有名字的视频 → `{label}_序号`
- * - 名字未知 → `视频_序号`
- */
-function videoStem(asset: Asset, serial: string): string {
-  const label = asset.label?.trim();
-  if (label === '主图视频') return fileStem('主图视频');
-  if (label && label !== '') return fileStem(`${label}_${serial}`);
-  return fileStem(`视频_${serial}`);
-}
-
 function itemKeyOf(kind: AssetKind, asset: Asset): string {
   // 同一平台 key 在同一类别下只会出现一次；万一平台给了重复 key，planner 会去重
   return `${kind}:${asset.key}`;
@@ -131,10 +125,7 @@ export function planDownload(input: PlanInput): WritePlan {
     now === undefined ? {} : { now },
   );
 
-  const folder: string[] = [];
-  if (settings.byPlatform)
-    folder.push(sanitizeName(platformDisplayName, { maxLength: NAME_LIMITS.platform }));
-  folder.push(productFolder);
+  const folder: string[] = [productFolder];
 
   const skuLabels = skuLabelsByImageKey(snapshot.skus);
   const items: WorkItem[] = [];
@@ -161,15 +152,12 @@ export function planDownload(input: PlanInput): WritePlan {
       if (!passesDetailFilter(asset, settings.detailMinWidth, kind)) continue;
 
       const serial = padNumber(ordinal, width);
-      let stem: string;
-      if (kind === 'sku') {
-        const label = skuLabels.get(asset.key);
-        stem = fileStem(label === undefined ? serial : `${serial}_${label}`);
-      } else if (kind === 'video') {
-        stem = videoStem(asset, serial);
-      } else {
-        stem = fileStem(serial);
-      }
+      const label = kind === 'sku' ? skuLabels.get(asset.key)?.trim() : undefined;
+      const stem = fileStem(
+        kind === 'sku' && label !== undefined && label !== ''
+          ? `${FILE_PREFIX[kind]}${serial}_${label}`
+          : `${FILE_PREFIX[kind]}${serial}`,
+      );
 
       push({
         itemKey: itemKeyOf(kind, asset),
@@ -181,16 +169,13 @@ export function planDownload(input: PlanInput): WritePlan {
         kind,
       });
 
-      // 视频封面（§9.9，默认关闭）：文件名固定成「主图视频_封面」
+      // 视频封面（§9.9，默认关闭）：文件名是「视频01_封面」
       if (kind === 'video' && settings.videoCover && asset.video?.cover !== undefined) {
-        const coverStem = fileStem(
-          asset.label?.trim() === '主图视频' ? '主图视频_封面' : `${stem}_封面`,
-        );
         push({
           itemKey: `${kind}-cover:${asset.key}`,
           group: kind,
           dir,
-          stem: coverStem,
+          stem: fileStem(`${stem}_封面`),
           expect: 'image',
           candidates: [asset.video.cover],
           kind,
@@ -199,10 +184,7 @@ export function planDownload(input: PlanInput): WritePlan {
     }
   }
 
-  const extras: PlanExtra[] = ['folder-manifest'];
-  if (settings.infoTxt) extras.push('info-txt');
-
-  return { folder, items, extras };
+  return { folder, items };
 }
 
 /** 计划里各类别的文件数，主按钮和素材行用它显示数量 */

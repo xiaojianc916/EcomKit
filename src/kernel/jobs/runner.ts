@@ -191,8 +191,8 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
    * 不用 queueLoad() 判：running 里的任务只有在「inFlight 归零 + 待跑项归零」之后才会被移除，
    * 而 inFlight 恰好是「已经丢进并发池、还没 settle」的项数 —— 所以 running 空了，
    * 这个 runner 自己那两个池也一定空了（池子里剩下的只有正在收尾的那一个）。
-   * finalizing 单独计：finalize（写 .ecbox.json）在任务从 running 移除之后才跑完，
-   * 不算进去的话 idle() 会早返回，调用方读到的 .ecbox.json 可能还没写完。
+   * finalizing 单独计：finalize 在任务从 running 移除之后才跑完，
+   * 不算进去的话 idle() 会早返回，调用方以为都完事了，实际收尾还没做。
    */
   function isIdle(): boolean {
     return running.size === 0 && finalizing === 0;
@@ -517,7 +517,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   }
 
   /**
-   * 收尾（§9.6）：判定最终状态 → 调 finalize（写 .ecbox.json、商品信息.txt）→ 推 done。
+   * 收尾（§9.6）：判定最终状态 → 调 finalize（功能自己的收尾动作）→ 推 done。
    * finalize 失败不回滚已下载的文件，只记日志：用户看到的文件都是完整的。
    */
   async function finalizeJob(job: RunningJob): Promise<void> {
@@ -529,7 +529,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
      * 收尾**取消也要跑**（§9.11）。
      *
      * 旧实现是 `if (!wasCanceled && job.def.finalize)`：用户取消后已经落盘的文件
-     * 不会写进 .ecbox.json，再点「继续下载」时增量判断失效，同一张图会被当成新文件
+     * 不会被记下来，再点「继续下载」时增量判断失效，同一张图会被当成新文件
      * 另存为「01 (2).webp」。
      * finalize 只记录 status==='ok' 的结果，所以取消时它只会补记真正写完的那些。
      */
@@ -547,7 +547,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   }
 
   /**
-   * finalizeJob 的包装：让 idle() 能等到 .ecbox.json 真的写完。
+   * finalizeJob 的包装：让 idle() 能等到收尾真的跑完。
    * 先 +1 再从 running 里摘掉，摘掉时 notifyIdle() 看到的就不是「空」；
    * 否则 idle() 会在 finalize 还没跑的时候先返回，调用方读到的清单是旧的。
    */
@@ -684,7 +684,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
 
       const startedAt = now();
       /**
-       * 重新提交同一份 payload：.ecbox.json 会自动跳过已完成的文件（§9.11），
+       * 重新提交同一份 payload：已落盘的同名文件会自动跳过（§9.11），
        * 所以「重试失败项」等价于「再提交一次」，不必单独维护子集计划。
        *
        * **dedupeKey 必须保持不变**：页面用 `平台:商品ID` 订阅进度，

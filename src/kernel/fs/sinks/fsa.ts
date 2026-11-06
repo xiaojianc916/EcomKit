@@ -307,32 +307,6 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
       }
     },
 
-    /** §9.11：损坏的 .ecbox.json 改名保留现场。FSA 没有 rename，用「复制 + 删除」实现 */
-    async rename(dir: RelPath, from: string, to: string): Promise<void> {
-      try {
-        const dirHandle = await getDir(dir, false);
-        const source = await dirHandle.getFileHandle(from);
-        const blob = await source.getFile();
-        const target = await dirHandle.getFileHandle(to, { create: true });
-        const writable = await target.createWritable();
-        try {
-          await writable.write(blob);
-          await writable.close();
-        } catch (e) {
-          await writable.abort().catch(() => {});
-          throw fsError(e);
-        }
-        await dirHandle.removeEntry(from);
-        const names = nameLists.get(dirKey(dir))?.names;
-        if (names) {
-          names.delete(nameKey(from));
-          names.add(nameKey(to));
-        }
-      } catch (e) {
-        throw fsError(e);
-      }
-    },
-
     async exists(dir: RelPath, name: string): Promise<number | null> {
       try {
         const dirHandle = await getDir(dir, false);

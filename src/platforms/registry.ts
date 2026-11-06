@@ -102,7 +102,7 @@ function hostAllowed(hostname: string): boolean {
   return false;
 }
 
-/** 规范化商品链接：只保留商品 ID 参数（写进 .ecbox.json 和 商品信息.txt） */
+/** 规范化商品链接：只保留商品 ID 参数（写进快照，也是「同一个商品」的判定依据） */
 export function normalizeProductUrl(url: URL): string {
   const hit = findPageKind(url);
   if (!hit) return url.origin + url.pathname;

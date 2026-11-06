@@ -10,7 +10,7 @@ import { STORAGE_KEYS } from './keys';
  *   handles   —— 根目录句柄 + rootId
  *   folders   —— 商品文件夹索引 ${rootId}:${platform}:${productId}
  *   logs      —— 诊断用的历史日志（FIFO 2000 条，§6.5）
- *   downloads —— downloads 兜底模式下的已写文件记录（§9.13 没有 .ecbox.json）
+ *   downloads —— downloads 兜底模式下的已写文件记录（§9.13 拿不到真实目录，只能自己记）
  */
 
 export type StoreName = 'handles' | 'folders' | 'logs' | 'downloads';

@@ -36,7 +36,7 @@ export interface WriteFileOptions {
 }
 
 /**
- * 相对根目录的路径分段，例如 `['拼多多', '夏季连衣裙_482319937501', '主图']`。
+ * 相对根目录的路径分段，例如 `['拼多多_商品ID_482319937501', '主图']`。
  * 空数组表示根目录本身。
  */
 export type RelPath = readonly string[];
@@ -72,8 +72,6 @@ export interface FsSink {
   writeText(dir: RelPath, name: string, text: string): Promise<void>;
   listDir(dir: RelPath): Promise<DirEntry[]>;
   removeFile(dir: RelPath, name: string): Promise<void>;
-  /** 改名（§9.11：损坏的 .ecbox.json 要改名为 .ecbox.broken-<时间>.json 保留现场） */
-  rename(dir: RelPath, from: string, to: string): Promise<void>;
   /** 文件大小（字节）；不存在返回 null。downloads 模式拿不到大小时返回 0 */
   exists(dir: RelPath, name: string): Promise<number | null>;
 }
@@ -87,22 +85,17 @@ export interface FsGateway {
    */
   setSink(sink: FsSink): void;
   status(): Promise<DirState>;
-  /** 商品文件夹定位：索引 → `_ID` 后缀扫描 → 新建（§9.3、ADR-6） */
+  /**
+   * 商品文件夹定位：索引 → `_ID` 后缀扫描 → 新建（§9.3、ADR-6）。
+   *
+   * 商品文件夹**直接躺在根目录下**：默认模板 `{platform}_商品ID_{id}` 生成的
+   * 名字里已经带平台名（拼多多_商品ID_1019084314929），外面再套一层平台目录是重复的。
+   */
   resolveProductFolder(opts: {
     platform: string;
     productId: string;
     preferredName: string;
-  }): Promise<{ dir: RelPath; folderName: string; platformDir: RelPath }>;
-  /**
-   * 只查找、不创建：这个商品在磁盘上已有的文件夹（历史查询用）。
-   * 找不到返回 null —— 调用方按「还没下载过」处理，而不是顺手建一个空目录。
-   */
-  findProductFolder(opts: {
-    platform: string;
-    productId: string;
-  }): Promise<{ dir: RelPath; folderName: string } | null>;
-  ensurePlatformDir(platform: string): Promise<RelPath>;
-  ensureSubdir(parent: RelPath, name: string): Promise<RelPath>;
+  }): Promise<{ dir: RelPath; folderName: string }>;
   writeFile(
     dir: RelPath,
     name: string,
@@ -110,11 +103,8 @@ export interface FsGateway {
     signal: AbortSignal,
     opts?: WriteFileOptions,
   ): Promise<WriteResult>;
-  readJson<T>(dir: RelPath, name: string): Promise<T | null>;
-  writeJson(dir: RelPath, name: string, value: unknown): Promise<void>;
   readText(dir: RelPath, name: string): Promise<string | null>;
   writeText(dir: RelPath, name: string, text: string): Promise<void>;
-  rename(dir: RelPath, from: string, to: string): Promise<void>;
   exists(dir: RelPath, name: string): Promise<number | null>;
 }
 

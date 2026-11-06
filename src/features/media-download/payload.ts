@@ -29,7 +29,6 @@ export const MediaDownloadPayloadSchema = z.object({
   selection: SelectionSchema,
   /** planner 需要的设置（由功能设置换算，字段少于 MediaDownloadSettings） */
   settings: z.object({
-    byPlatform: z.boolean(),
     folderTemplate: z.string().min(1),
     dirNames: z.object({
       main: z.string().min(1),
@@ -37,7 +36,6 @@ export const MediaDownloadPayloadSchema = z.object({
       detail: z.string().min(1),
       video: z.string().min(1),
     }),
-    infoTxt: z.boolean(),
     videoCover: z.boolean(),
     detailMinWidth: z.number().int().min(0),
     /** WebP / AVIF 转 JPG；关闭时按嗅探结果原样落盘（§9.8） */
@@ -64,7 +62,6 @@ export function toPlannerSettings(settings: MediaDownloadSettings): PlannerSetti
   toJpeg: boolean;
 } {
   return {
-    byPlatform: settings.byPlatform,
     folderTemplate: settings.folderTemplate,
     dirNames: {
       main: settings.dirNames.main,
@@ -72,7 +69,6 @@ export function toPlannerSettings(settings: MediaDownloadSettings): PlannerSetti
       detail: settings.dirNames.detail,
       video: settings.dirNames.video,
     },
-    infoTxt: settings.infoTxt,
     videoCover: settings.videoCover,
     detailMinWidth: settings.detailMinWidth,
     toJpeg: settings.toJpeg,
@@ -106,7 +102,7 @@ export function parseMediaDownloadPayload(raw: unknown): MediaDownloadPayload {
   return MediaDownloadPayloadSchema.parse(raw);
 }
 
-/** 计划里各类别数量（UI 和 history 都用同一份计划） */
+/** 计划里各类别数量（UI 用它显示「下载 N 个文件」） */
 export function planOf(payload: MediaDownloadPayload, now?: number): WritePlan {
   return planDownload({
     snapshot: payload.snapshot,
@@ -117,7 +113,7 @@ export function planOf(payload: MediaDownloadPayload, now?: number): WritePlan {
   });
 }
 
-/** 默认设置下的选择：全选，给快捷操作和历史查询用 */
+/** 默认设置下的选择：全选，给快捷操作用 */
 export const ALL_KINDS: AssetKind[] = ['main', 'sku', 'detail', 'video'];
 
 export const FALLBACK_SETTINGS = DEFAULT_MEDIA_DOWNLOAD_SETTINGS;

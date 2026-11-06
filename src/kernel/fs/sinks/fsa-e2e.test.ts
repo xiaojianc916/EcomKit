@@ -221,7 +221,7 @@ function payloadOf() {
 }
 
 describe('FSA 写入层（用户实际使用的保存方式）', () => {
-  it('完整下载把文件写进 平台/商品/类别 三层目录', async () => {
+  it('完整下载把文件写进 商品/类别 两层目录（根目录下直接就是商品文件夹）', async () => {
     const { runner, tree } = setup();
     const payload = payloadOf();
     await runner.enqueue(
@@ -245,11 +245,12 @@ describe('FSA 写入层（用户实际使用的保存方式）', () => {
     expect(names.filter((f) => f.endsWith('.png'))).toHaveLength(3);
     expect(names.filter((f) => f.includes('/主图/'))).toHaveLength(2);
     expect(names.filter((f) => f.includes('/详情图/'))).toHaveLength(1);
-    expect(names.some((f) => f.endsWith('/.ecbox.json'))).toBe(true);
-    expect(names.some((f) => f.endsWith('/商品信息.txt'))).toBe(true);
-    // 图片必须是 平台/商品/类别/文件 四段，缺一层就说明落盘路径算错了
+    // 不写任何侧录文件：商家要的是能直接上传的素材目录
+    expect(names.some((f) => f.endsWith('/.ecbox.json'))).toBe(false);
+    expect(names.some((f) => f.endsWith('/商品信息.txt'))).toBe(false);
+    // 图片必须是 商品/类别/文件 三段（根目录下直接是商品文件夹，没有平台目录层）
     for (const img of names.filter((f) => f.endsWith('.png'))) {
-      expect(img.split('/').length, img).toBe(4);
+      expect(img.split('/').length, img).toBe(3);
     }
   });
 
@@ -292,9 +293,9 @@ describe('FSA 写入层（用户实际使用的保存方式）', () => {
     const sink = createFsaSink({ loadRoot: async () => counting });
     const signal = new AbortController().signal;
     for (let i = 0; i < 8; i += 1) {
-      await sink.ensureDir(['拼多多', '商品_1', '详情图']);
-      const name = await sink.resolveName(['拼多多', '商品_1', '详情图'], String(i), 'png');
-      await sink.writeFile(['拼多多', '商品_1', '详情图'], name, new Blob([PNG]), signal);
+      await sink.ensureDir(['商品_1', '详情图']);
+      const name = await sink.resolveName(['商品_1', '详情图'], String(i), 'png');
+      await sink.writeFile(['商品_1', '详情图'], name, new Blob([PNG]), signal);
     }
     const names = snapshot().map((f) => f.split(' [')[0] ?? '');
     expect(names.filter((f) => f.includes('/详情图/'))).toHaveLength(8);
@@ -306,16 +307,15 @@ describe('FSA 写入层（用户实际使用的保存方式）', () => {
     const { root } = makeFsaRoot();
     const sink = createFsaSink({ loadRoot: async () => root });
     const signal = new AbortController().signal;
-    await sink.ensureDir(['拼多多', '商品_1']);
-    await sink.writeFile(['拼多多', '商品_1'], 'a.txt', new Blob(['x']), signal);
+    await sink.ensureDir(['商品_1']);
+    await sink.writeFile(['商品_1'], 'a.txt', new Blob(['x']), signal);
     // 用户（或同步盘）把整个商品目录删掉
-    const platform = await root.getDirectoryHandle('拼多多');
-    await platform.removeEntry('商品_1');
+    await root.removeEntry('商品_1');
     // 缓存里那个句柄已经指向被删掉的目录：必须自动清缓存、按原路径重建，而不是一直失败
-    const result = await sink.writeFile(['拼多多', '商品_1'], 'b.txt', new Blob(['y']), signal);
+    const result = await sink.writeFile(['商品_1'], 'b.txt', new Blob(['y']), signal);
     expect(result.name).toBe('b.txt');
     // 用 sink 自己读回（snapshot 只认得最初那个 rootNode，看不到重建出来的节点）
-    expect(await sink.exists(['拼多多', '商品_1'], 'b.txt')).toBe(1);
+    expect(await sink.exists(['商品_1'], 'b.txt')).toBe(1);
   });
 
   it('写入中断（abort）不留半截文件（§9.10）', async () => {
@@ -332,7 +332,7 @@ describe('FSA 写入层（用户实际使用的保存方式）', () => {
     );
     await runner.idle();
     // 正常完成是预期；这条主要防止 abort 分支把 0 字节文件留在磁盘上
-    const zeroByte = tree().filter((f) => /\[0B\]/.test(f) && !f.includes('.ecbox'));
+    const zeroByte = tree().filter((f) => /\[0B\]/.test(f));
     expect(zeroByte, zeroByte.join(',')).toHaveLength(0);
   });
 });

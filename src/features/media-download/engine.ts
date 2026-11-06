@@ -3,7 +3,10 @@
  *
  * 跑在 **Offscreen**（ADR-1）：只有这里能拿目录句柄写文件、能转码、不受 SW 30 秒回收影响。
  *
- * 三段式：plan 算要写什么（纯函数）→ run 逐个下载写入 → finalize 写清单和信息文件。
+ * 两段式：plan 算要写什么（纯函数）→ run 逐个下载写入。
+ * **不写任何侧录文件**（旧实现会写 `.ecbox.json` 和 `商品信息.txt`）：
+ * 商家要的是能直接上传的素材目录，多一个文件就多一次手工删除。
+ * 增量下载因此改为「同名文件已在盘上就跳过」，判断依据是真实文件，不依赖我们自己的记录。
  *
  * 载荷定义在 ./payload.ts，和页面共用同一份 Zod schema —— 页面少传字段会当场报错，
  * 不会变成「点了没反应」。
@@ -12,27 +15,15 @@ import type { z } from 'zod';
 import { EcError } from '../../kernel/errors/ec-error';
 import type { FsGateway } from '../../kernel/fs/types';
 import type { ItemResult, JobTypeDef, WorkItem } from '../../kernel/jobs/types';
-import { createLogger, type Logger } from '../../kernel/log/logger';
+import { createLogger } from '../../kernel/log/logger';
 import { isConvertibleMime } from '../../kernel/media/convert';
 import { readHead, SNIFF_BYTES, sniff } from '../../kernel/net/sniff';
-import {
-  buildFolderManifest,
-  type FolderManifest,
-  MANIFEST_FILE,
-  type ManifestFileEntry,
-  mergeManifestFiles,
-  parseFolderManifest,
-  serializeFolderManifest,
-  summarizeHistory,
-} from './folder-manifest';
-import { buildInfoTxt } from './info-txt';
 import {
   type MediaDownloadPayload,
   MediaDownloadPayloadSchema,
   planOf,
   platformDisplayName,
 } from './payload';
-import type { PlannerSettings } from './planner';
 
 /** 扩展名一律由内容嗅探决定，不信 URL 后缀（§9.1） */
 const MIME_EXT: Record<string, string> = {
@@ -46,27 +37,16 @@ const MIME_EXT: Record<string, string> = {
   'video/mp2t': 'ts',
 };
 
-/** engine 的 extra：整个任务共享的只读上下文（清单 + 计划根目录） */
+/** engine 的 extra：整个任务共享的只读上下文（计划根目录） */
 export interface MediaDownloadExtra {
   payload: MediaDownloadPayload;
-  /** 商品文件夹的相对路径（写 .ecbox.json / 商品信息.txt 的位置） */
+  /** 商品文件夹的相对路径 */
   root: string[];
-  /** 上一次的 .ecbox.json；读不到或损坏时为 null */
-  manifest: FolderManifest | null;
 }
 
 /** extra() 里没有 logger 参数，定位失败时用它兜底记录 */
 const fallbackLog = createLogger('media-download');
 
-function settingsOf(p: MediaDownloadPayload): PlannerSettings {
-  return p.settings as unknown as PlannerSettings;
-}
-
-/**
- * 落盘目录：**item.dir 已经是完整相对路径**（plan 阶段把商品文件夹前缀拼进去了）。
- * 旧实现在这里又 slice(0,-1)，把「主图」这一层砍掉，图片全写进商品根目录 ——
- * 面板上的「主图/详情图」分目录从未真正生效过。
- */
 /** 把异常压成一行可读的原因（只进日志，不进 UI） */
 function describeError(e: unknown): string {
   if (EcError.is(e)) {
@@ -123,7 +103,7 @@ async function streamVideo(
   }
   // 空响应体：CDN 偶尔回 200 + 0 字节（对象被删但缓存还没失效）。
   // 落一个 0 字节文件出来，用户会在资源管理器里看到一个打不开的「视频」，
-  // 而且增量记录会把这条路径记成已完成，下次也不会重下。
+  // 而且「同名文件已存在就跳过」会把这条路径记成已完成，下次也不会重下。
   if (head.byteLength === 0 || rest === null) {
     throw new EcError('NETWORK', { reason: 'empty-video-body' });
   }
@@ -165,19 +145,41 @@ async function resolveFolder(
 ): Promise<string[] | null> {
   try {
     const platformName = platformDisplayName(p.snapshot.platform);
-    // 模板里最后一段就是商品文件夹名（前面可能还有平台层）
+    // 模板里最后一段就是商品文件夹名
     const preferredName = templateFolder[templateFolder.length - 1] ?? p.snapshot.productId;
     const resolved = await ctx.fs.resolveProductFolder({
       platform: platformName,
       productId: p.snapshot.productId,
       preferredName,
     });
-    // byPlatform=false 时用户明确要求不要多一层平台目录，去掉 gateway 补的那一层
-    return p.settings.byPlatform ? [...resolved.dir] : resolved.dir.slice(1);
+    return [...resolved.dir];
   } catch (e) {
     ctx.log.warn('商品文件夹定位失败，退回模板路径', e);
     return null;
   }
+}
+
+/**
+ * 这个文件是不是已经在盘上了（增量下载的唯一依据）。
+ *
+ * 只比名字、不比大小：大小要靠另外一次网络请求才知道，而这里的目标是
+ * 「第二次点下载不重下一遍」。真被用户改坏了，删掉再下即可。
+ */
+async function alreadyThere(fs: FsGateway, dir: string[], item: WorkItem): Promise<string | null> {
+  // 扩展名由内容决定，只能把可能的类型逐个试一遍；
+  // 图片按「转成 JPG」的默认结果先找 .jpg，找得到就不必再发请求
+  const exts =
+    item.expect === 'video' ? ['mp4', 'ts'] : ['jpg', 'webp', 'png', 'gif', 'avif', 'heic'];
+  for (const ext of exts) {
+    const name = `${item.stem}.${ext}`;
+    try {
+      const size = await fs.exists(dir as never, name);
+      if (size !== null) return [...dir, name].join('/');
+    } catch {
+      // 判断不了存在性就老实重下
+    }
+  }
+  return null;
 }
 
 export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloadExtra> = {
@@ -189,60 +191,32 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
 
   requiresDir: true,
 
-  /**
-   * 任务开始前读一次 .ecbox.json（增量下载的依据，§9.11）。
-   * 读失败不致命：当作「没有记录」，全部重新下载。
-   */
+  /** 商品文件夹必须和 plan 用**同一套定位**，否则图片会被写进两个文件夹 */
   async extra(p, { fs }): Promise<MediaDownloadExtra> {
-    // 商品文件夹必须和 plan 用**同一套定位**，否则清单会写进模板算出来的另一个文件夹里，
-    // 于是「改标题多一个空文件夹」+「增量记录永远读不到」同时发生。
     const template = planOf(p).folder;
     const root = (await resolveFolder(p, template, { fs, log: fallbackLog })) ?? template;
-    let manifest: FolderManifest | null = null;
-    try {
-      const text = await fs.readText(root as never, MANIFEST_FILE);
-      const parsed = parseFolderManifest(text);
-      if (parsed.kind === 'ok') manifest = parsed.manifest;
-    } catch {
-      // 目录还没建好、或者 sink 不支持读（downloads 模式），按没有记录处理
-    }
-    return { payload: p, root: [...root], manifest };
+    return { payload: p, root: [...root] };
   },
 
   async plan(p, ctx) {
     const plan = planOf(p);
     /**
      * 商品文件夹必须走 gateway 的定位（ADR-6）：
-     * 索引 → 平台目录下扫 `_商品ID` 后缀 → 都没有才按模板新建。
+     * 索引 → 同根目录下扫 `_商品ID` 后缀 → 都没有才按模板新建。
      *
-     * 旧实现直接用模板拼出来的 plan.folder 建目录，于是**商家一改标题就会多出一个文件夹**，
-     * 增量下载的 .ecbox.json 留在旧文件夹里，永远命中不了。索引和扫描代码一直存在，
-     * 但从来没有被下载链路调用过。
+     * 旧实现直接用模板拼出来的 plan.folder 建目录，于是**商家一改标题就会多出一个文件夹**。
      */
     const folder = (await resolveFolder(p, plan.folder, ctx)) ?? plan.folder;
     return plan.items.map((item) => ({ ...item, dir: [...folder, ...item.dir] }));
   },
 
   async run(item, ctx) {
-    const extra = ctx.extra;
     const dir = itemTargetDir(item);
     try {
-      // 0. 增量跳过（§9.11）：清单里记过、且文件还在（大小一致）就跳过
-      const recorded = extra?.manifest?.files[item.itemKey];
-      if (recorded !== undefined && recorded.path !== '') {
-        const segments = recorded.path.split('/').filter((s) => s !== '');
-        const fileName = segments[segments.length - 1] ?? '';
-        const fileDir = segments.slice(0, -1);
-        if (fileName !== '') {
-          try {
-            const size = await ctx.fs.exists(fileDir as never, fileName);
-            if (size !== null && (recorded.size <= 0 || size === recorded.size)) {
-              return { itemKey: item.itemKey, status: 'skipped', bytes: size, path: recorded.path };
-            }
-          } catch {
-            // 判断不了存在性就老实重下
-          }
-        }
+      // 0. 增量跳过：同名文件已经在盘上就跳过（不写任何侧录文件，见文件头注释）
+      const existing = await alreadyThere(ctx.fs, dir, item);
+      if (existing !== null) {
+        return { itemKey: item.itemKey, status: 'skipped', bytes: 0, path: existing };
       }
 
       // 1. 下载：多候选切换、重试、超时都在 fetcher（§9.7）
@@ -261,8 +235,7 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
        * 内存占用与文件大小无关（§9.9）。
        */
       if (item.expect === 'video') {
-        const streamed = await streamVideo(item, res, dir, ctx);
-        return streamed;
+        return await streamVideo(item, res, dir, ctx);
       }
 
       const blob = await res.blob();
@@ -277,8 +250,6 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
        *
        * m3u8 本身就是几百字节的文本，直接落盘会得到一个「看起来成功」的 0:00 视频，
        * 用户以为下好了，实际打不开。这里明确报 UNSUPPORTED_STREAM，让失败列表说清楚原因。
-       * （分片合并的 downloadHls 在 kernel/media/hls.ts 里，v1 不接：拼多多/抖音的
-       * 视频直链实测都是 mp4，走不到这条路径；真遇到了要显式告诉用户，而不是静默给个坏文件。）
        */
       if (sniffed.mime === 'application/vnd.apple.mpegurl' || sniffed.container === 'hls') {
         throw new EcError('UNSUPPORTED_STREAM', { reason: 'hls-playlist' });
@@ -294,7 +265,8 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
        * 设置页的「转成 JPG」等于没生效。sniffed 是读真实文件头得到的，可靠。
        */
       let payload: Blob = blob;
-      const wantsJpeg = extra?.payload.settings.toJpeg !== false;
+      const wantsJpeg =
+        (ctx.extra as MediaDownloadExtra | undefined)?.payload.settings.toJpeg !== false;
       if (wantsJpeg && item.expect === 'image' && isConvertibleMime(sniffed.mime)) {
         try {
           const converted = await ctx.media.toJpeg(blob);
@@ -335,105 +307,8 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
       return { itemKey: item.itemKey, status: 'failed', code: err.code };
     }
   },
-
-  async finalize(p, results, ctx) {
-    // 用任务开始时定位到的那个文件夹：清单必须和图片在同一个目录里（§9.11）
-    const root = ctx.extra?.root ?? planOf(p).folder;
-    const ok = results.filter((r) => r.status === 'ok' || r.status === 'skipped');
-
-    // 1. .ecbox.json（增量下载依据，§9.11）
-    try {
-      const text = await ctx.fs.readText(root as never, MANIFEST_FILE);
-      const existing = parseFolderManifest(text);
-      const files: Record<string, ManifestFileEntry> =
-        existing.kind === 'ok' ? { ...existing.manifest.files } : {};
-      for (const r of ok) {
-        files[r.itemKey] = { path: r.path ?? '', size: r.bytes ?? 0, at: Date.now() };
-      }
-      const previous = existing.kind === 'ok' ? existing.manifest : null;
-      const merged = mergeManifestFiles(previous, files);
-      const manifest = buildFolderManifest({
-        snapshot: p.snapshot,
-        files: merged,
-        at: Date.now(),
-      });
-      await ctx.fs.writeText(root as never, MANIFEST_FILE, serializeFolderManifest(manifest));
-    } catch (e) {
-      ctx.log.warn('写 .ecbox.json 失败', e);
-    }
-
-    // 2. 商品信息.txt（UTF-8 BOM + CRLF，§9.12）
-    if (settingsOf(p).infoTxt !== false) {
-      try {
-        await ctx.fs.writeText(
-          root as never,
-          '商品信息.txt',
-          buildInfoTxt({ snapshot: p.snapshot, at: Date.now() }),
-        );
-      } catch (e) {
-        ctx.log.warn('写商品信息.txt 失败', e);
-      }
-    }
-  },
 };
-
-/**
- * engine 的私有 RPC（§8.6）。只有 history.get：读 .ecbox.json 算出「上次下载于…、还缺几个」。
- * 页面调 api.call('history.get') → bg 的 feature.call → 这里。
- */
-export interface HistoryQuery {
-  platform?: string;
-  productId: string;
-  itemKeys?: string[];
-}
-
-export async function historyGet(
-  args: unknown,
-  ctx: { gateway: FsGateway; log: Logger },
-): Promise<{ lastAt: number; missing: string[]; total: number } | null> {
-  const q = args as HistoryQuery | undefined;
-  if (!q?.productId) return null;
-
-  const expected = q.itemKeys ?? [];
-  try {
-    // 平台名用的是「平台的叫法」（目录名就是这么起的），不是平台 id
-    const platformName = platformDisplayName(q.platform ?? 'pinduoduo');
-
-    /**
-     * 商品文件夹不能靠模板现算：模板里的 {title} 来自**当前快照**，而这里只有商品 ID。
-     * 所以走 gateway 的「只查不建」定位（索引 → `_ID` 后缀扫描），和真正下载用同一套规则。
-     * 旧实现的 history.get 根本没实现（bg 也从没注册 feature.call），面板上的
-     * 「补全 N 个文件」「上次下载于…」永远不会出现。
-     */
-    const found = await ctx.gateway.findProductFolder({
-      platform: platformName,
-      productId: q.productId,
-    });
-    if (found === null) return null;
-
-    const text = await ctx.gateway.readText(found.dir as never, MANIFEST_FILE);
-    const parsed = parseFolderManifest(text);
-    if (parsed.kind !== 'ok') return null;
-    if (expected.length === 0) {
-      return {
-        lastAt: parsed.manifest.updatedAt,
-        total: Object.keys(parsed.manifest.files).length,
-        missing: [],
-      };
-    }
-    const summary = summarizeHistory(
-      parsed.manifest,
-      new Map(expected.map((key) => [key, undefined])),
-    );
-    return summary === null
-      ? null
-      : { lastAt: summary.lastAt, missing: summary.missing, total: summary.total };
-  } catch {
-    return null;
-  }
-}
 
 export default {
   jobTypes: [mediaDownloadJobType],
-  methods: { 'history.get': historyGet },
 };

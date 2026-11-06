@@ -1,9 +1,9 @@
 /**
- * 数字、体积、时间的显示格式。
+ * 数字和体积的显示格式。
  *
  * 为什么单独抽出来：§10.7 要求「数字精确」——「缺 3 个文件」而不是「部分文件缺失」，
  * 主按钮、附加说明、失败列表要用同一套写法，避免各处自己 toFixed。
- * 所有函数都是纯函数，时间一律显式传入 now，方便单测不依赖系统时间。
+ * 所有函数都是纯函数，不读系统时间，单测不用打桩。
  */
 
 const KB = 1024;
@@ -34,25 +34,6 @@ export function formatDuration(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return seconds === 0 ? `${minutes} 分` : `${minutes} 分 ${seconds} 秒`;
-}
-
-function pad2(value: number): string {
-  return value < 10 ? `0${value}` : String(value);
-}
-
-/**
- * 日期时间：11月3日 14:20；不是今年时带年份（§10.4「上次下载于 11月3日 14:20」）。
- * 用本地时区，用户看到的就是电脑上的时间。
- */
-export function formatDateTime(timestamp: number, now: number): string {
-  const date = new Date(timestamp);
-  const today = new Date(now);
-  const clock = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-  const day = `${date.getMonth() + 1}月${date.getDate()}日`;
-  if (date.getFullYear() !== today.getFullYear()) {
-    return `${date.getFullYear()}年${day} ${clock}`;
-  }
-  return `${day} ${clock}`;
 }
 
 /** 计数：23/48（§10.4 进度、§10.3 挑选模式 3/26） */

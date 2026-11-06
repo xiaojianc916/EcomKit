@@ -18,19 +18,17 @@ import type { DirEntry, DirState, FsSink, RelPath, WriteFileOptions, WriteResult
  *
  * 关键差异（也是本实现里所有「近似」的来源）：
  *   · 拿不到任何目录句柄，所有目录/文件的存在性只能靠「内存路径树 + chrome.downloads.search」推断；
- *   · 读不回已下载文件的内容，所以 readText 只对本次会话写过的文本返回内存副本，
- *     换句话说 **downloads 模式没有 .ecbox.json 的读能力**（方案 §9.13 已明确接受这一点，
- *     增量判断改为依靠 IndexedDB 记录 + chrome.downloads.search）；
- *   · 无法删除、无法改名（Chrome 不提供），所以 removeFile/rename 只在内存树里生效。
+ *   · 读不回已下载文件的内容，所以 readText 只对本次会话写过的文本返回内存副本。
+ *     这不影响增量下载：引擎的跳过判断是「同名文件已在盘上」（exists 查下载记录 + 内存树），
+ *     不再依赖任何侧录文件 —— 商品文件夹里只有素材本身；
+ *   · 无法删除（Chrome 不提供），所以 removeFile 只在内存树里生效。
  *
- * 下载文件名 = 根目录名 + 相对路径，例如「电商素材/拼多多/夏季连衣裙_482319937501/主图/01.jpg」。
+ * 下载文件名 = 根目录名 + 相对路径，例如「电商素材/拼多多_商品ID_482319937501/主图/主图01.jpg」。
  * 用户可以在浏览器设置里把默认下载位置指到想要的根目录（§9.13 设置页会提示）。
  */
 
 /** 下载根目录名（写进下载文件名的最前面） */
 export const DOWNLOAD_ROOT_NAME = '电商素材';
-
-const DOWNLOAD_STATE_FILENAME = 'ecbox-downloads.json';
 
 export interface DownloadsSinkOptions {
   /** 根目录显示名，默认「电商素材」 */
@@ -183,25 +181,18 @@ function createBridgeDownloadsApi(): DownloadsApi {
 const bridgeResults = new Map<string, { filename: string; size: number }>();
 
 /**
- * chrome.downloads 拒绝的文件名（实测：「Invalid filename」）：
- *   · 以点开头的文件名（.ecbox.json）
- *   · 空段、以及非法路径字符
- * 所以 downloads 模式下的侧录文件要用一个普通名字（见 MANIFEST_NAME_DOWNLOADS）。
+ * 相对路径 → 下载文件名（正斜杠，Chrome 下载 API 的约定）。
+ *
+ * 只剩「去掉空段和首尾斜杠」一件事：旧实现在这里给点开头的文件名补下划线，
+ * 那是为了侧录文件 .ecbox.json 能被 chrome.downloads 接受（它拒绝点开头的名字）。
+ * 侧录文件已经不存在，素材文件名全由 planner 生成（主图01.jpg / SKU01_杏色.jpg），
+ * 不会再有点开头的情况，那层改名只会让「内存树的键」和「真实文件名」对不上。
  */
-export const DOWNLOADS_MANIFEST_NAME = '_ecbox.json';
-
-/** 相对路径 → 下载文件名（正斜杠，Chrome 下载 API 的约定） */
 export function downloadPathName(rootName: string, dir: RelPath, name: string): string {
-  const segments = [sanitizeName(rootName, { maxLength: NAME_LIMITS.platform }), ...dir, name]
-    .map((seg) => seg.replace(/^\/+|\/+$/g, '').trim())
-    // chrome.downloads 不允许以点开头的文件名，这里补一个前缀而不是丢掉文件
-    .map((seg) => (seg.startsWith('.') ? `_${seg.slice(1)}` : seg));
+  const segments = [sanitizeName(rootName, { maxLength: NAME_LIMITS.platform }), ...dir, name].map(
+    (seg) => seg.replace(/^\/+|\/+$/g, '').trim(),
+  );
   return segments.filter((seg) => seg !== '').join('/');
-}
-
-/** downloads 模式下 .ecbox.json 的实际文件名（读取时也要用它，否则永远读不到） */
-export function downloadsManifestName(name: string): string {
-  return name.startsWith('.') ? `_${name.slice(1)}` : name;
 }
 
 /**
@@ -316,7 +307,7 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
     ): Promise<WriteResult> {
       throwIfAborted(signal);
 
-      const filename = downloadPathName(rootName, dir, downloadsManifestName(name));
+      const filename = downloadPathName(rootName, dir, name);
 
       /**
        * 内容没被改写过（没有 WebP→JPG 转码）时，直接把**原始 https 地址**交给浏览器下载：
@@ -401,7 +392,7 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
     },
 
     async readText(dir: RelPath, name: string): Promise<string | null> {
-      const key = pathKey(downloadPathName(rootName, dir, downloadsManifestName(name)));
+      const key = pathKey(downloadPathName(rootName, dir, name));
       const text = texts.get(key);
       if (text !== undefined) return text;
       // 没写过就读不到（§9.13 的已知限制），返回 null 让调用方按「没有记录」处理
@@ -409,7 +400,7 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
     },
 
     async writeText(dir: RelPath, name: string, text: string): Promise<void> {
-      const key = pathKey(downloadPathName(rootName, dir, downloadsManifestName(name)));
+      const key = pathKey(downloadPathName(rootName, dir, name));
       texts.set(key, text);
       await this.writeFile(
         dir,
@@ -446,31 +437,15 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
 
     /** Chrome 不提供删除，只能在内存树里移除，避免下次 resolveName 又让开 */
     async removeFile(dir: RelPath, name: string): Promise<void> {
-      const key = pathKey(downloadPathName(rootName, dir, downloadsManifestName(name)));
+      const key = pathKey(downloadPathName(rootName, dir, name));
       files.delete(key);
       texts.delete(key);
       schedulePersist();
     },
 
-    /** Chrome 不提供改名的 API：内存树里换 key，磁盘上保持原名（§9.11 的损坏清单处理会退化） */
-    async rename(dir: RelPath, from: string, to: string): Promise<void> {
-      const fromKey = pathKey(downloadPathName(rootName, dir, from));
-      const toKey = pathKey(downloadPathName(rootName, dir, to));
-      const size = files.get(fromKey);
-      if (size === undefined) throw new EcError('DIR_GONE', { reason: 'file-not-found' });
-      files.delete(fromKey);
-      files.set(toKey, size);
-      const text = texts.get(fromKey);
-      if (text !== undefined) {
-        texts.delete(fromKey);
-        texts.set(toKey, text);
-      }
-      schedulePersist();
-    },
-
     /** 返回记录里的大小；没有记录时再去 chrome.downloads 里查一次（§9.13 增量判断） */
     async exists(dir: RelPath, name: string): Promise<number | null> {
-      const filename = downloadPathName(rootName, dir, downloadsManifestName(name));
+      const filename = downloadPathName(rootName, dir, name);
       const remembered = files.get(pathKey(filename));
       if (remembered !== undefined) return remembered;
       try {
@@ -500,12 +475,4 @@ function filenamePattern(text: string): string {
   return `(?i)${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`;
 }
 
-/** 读取内存里的文本副本（诊断和单测用） */
-export function readMemoText(sink: FsSink, dir: RelPath, name: string): Promise<string | null> {
-  return sink.readText(dir, name);
-}
-
 export { blobToText };
-
-/** 状态文件名（调用方持久化到 IndexedDB 时用；不参与业务逻辑） */
-export const DOWNLOADS_STATE_FILE = DOWNLOAD_STATE_FILENAME;

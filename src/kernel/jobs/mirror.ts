@@ -79,7 +79,7 @@ export function isJobRecordLike(value: unknown): value is JobRecord {
 
 /**
  * 把镜像里「状态是 running、但 offscreen 已经不在了」的任务标成 interrupted。
- * 为什么不标 failed：用户点「继续」还能接着下（.ecbox.json 会跳过已完成的文件，§9.11）。
+ * 为什么不标 failed：用户点「继续」还能接着下（已落盘的同名文件会被跳过，§9.11）。
  */
 export function markInterrupted(
   jobs: readonly JobRecord[],

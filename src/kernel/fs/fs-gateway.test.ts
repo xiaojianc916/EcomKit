@@ -9,18 +9,19 @@ function gateway() {
 }
 
 describe('FsGateway.resolveProductFolder（§9.3 / ADR-6）', () => {
-  it('第一次下载：按模板名新建平台目录和商品目录', async () => {
+  it('第一次下载：按模板名在根目录下新建商品文件夹（没有平台目录层）', async () => {
     const { sink, gw } = gateway();
     const result = await gw.resolveProductFolder({
       platform: '拼多多',
       productId: '482319937501',
-      preferredName: '夏季连衣裙_482319937501',
+      preferredName: '拼多多_商品ID_482319937501',
     });
-    expect(result.folderName).toBe('夏季连衣裙_482319937501');
-    expect(result.dir).toEqual(['拼多多', '夏季连衣裙_482319937501']);
-    expect(result.platformDir).toEqual(['拼多多']);
-    const entries = await sink.listDir(['拼多多']);
-    expect(entries.map((e) => e.name)).toContain('夏季连衣裙_482319937501');
+    expect(result.folderName).toBe('拼多多_商品ID_482319937501');
+    // 商品文件夹名里已经带了平台名，外面再套一层「拼多多」就是重复
+    expect(result.dir).toEqual(['拼多多_商品ID_482319937501']);
+    const entries = await sink.listDir([]);
+    expect(entries.map((e) => e.name)).toEqual(['拼多多_商品ID_482319937501']);
+    expect(entries[0]?.kind).toBe('directory');
   });
 
   it('第二次下载：索引命中，直接复用同一个文件夹', async () => {
@@ -28,30 +29,33 @@ describe('FsGateway.resolveProductFolder（§9.3 / ADR-6）', () => {
     const first = await gw.resolveProductFolder({
       platform: '拼多多',
       productId: '482319937501',
-      preferredName: '夏季连衣裙_482319937501',
+      preferredName: '拼多多_商品ID_482319937501',
     });
     const second = await gw.resolveProductFolder({
       platform: '拼多多',
       productId: '482319937501',
-      preferredName: '商家改了标题_482319937501',
+      preferredName: '拼多多_商品ID_482319937501',
     });
     expect(second.folderName).toBe(first.folderName);
+    expect(second.dir).toEqual(first.dir);
   });
 
   it('商家改标题后（索引丢失）：靠 _ID 后缀扫回旧文件夹', async () => {
     const { sink, gw } = gateway();
-    await sink.ensureDir(['拼多多', '旧标题_482319937501']);
+    await sink.ensureDir(['旧标题_482319937501']);
     const result = await gw.resolveProductFolder({
       platform: '拼多多',
       productId: '482319937501',
       preferredName: '新标题_482319937501',
     });
     expect(result.folderName).toBe('旧标题_482319937501');
+    // 扫的是根目录，所以命中结果只有一段
+    expect(result.dir).toEqual(['旧标题_482319937501']);
   });
 
   it('_ID 后缀匹配大小写不敏感', async () => {
     const { sink, gw } = gateway();
-    await sink.ensureDir(['拼多多', '旧标题_ABC123']);
+    await sink.ensureDir(['旧标题_ABC123']);
     const result = await gw.resolveProductFolder({
       platform: '拼多多',
       productId: 'abc123',
@@ -62,7 +66,7 @@ describe('FsGateway.resolveProductFolder（§9.3 / ADR-6）', () => {
 
   it('后缀匹配不会误伤前缀相同的商品（_123 不能匹配 _1234）', async () => {
     const { sink, gw } = gateway();
-    await sink.ensureDir(['拼多多', '别的商品_4823199375010']);
+    await sink.ensureDir(['别的商品_4823199375010']);
     const result = await gw.resolveProductFolder({
       platform: '拼多多',
       productId: '482319937501',
@@ -80,37 +84,37 @@ describe('FsGateway.resolveProductFolder（§9.3 / ADR-6）', () => {
       keys: async () => [],
     });
     const gw = createFsGateway({ sink, index: staleIndex, rootId: async () => 'root-1' });
-    await sink.ensureDir(['拼多多']);
     const result = await gw.resolveProductFolder({
       platform: '拼多多',
       productId: '482319937501',
       preferredName: '新名字_482319937501',
     });
     expect(result.folderName).toBe('新名字_482319937501');
+    expect((await sink.listDir([])).map((e) => e.name)).toEqual(['新名字_482319937501']);
   });
 
-  it('平台名按 §9.2 清洗', async () => {
+  it('文件夹名按 §9.2 清洗（清洗后仍是根目录下的一段）', async () => {
     const { gw } = gateway();
-    const dir = await gw.ensurePlatformDir('拼/多多');
-    expect(dir[0]).toBe('拼／多多');
-  });
-});
-
-describe('FsGateway.ensureSubdir', () => {
-  it('按子文件夹长度上限清洗', async () => {
-    const { gw } = gateway();
-    const parent = await gw.ensurePlatformDir('拼多多');
-    const sub = await gw.ensureSubdir(parent, 'SKU图');
-    expect(sub).toEqual(['拼多多', 'SKU图']);
+    const result = await gw.resolveProductFolder({
+      platform: '拼多多',
+      productId: '482319937501',
+      preferredName: '拼/多多:商品_482319937501',
+    });
+    expect(result.folderName).toBe('拼／多多：商品_482319937501');
+    expect(result.dir).toEqual(['拼／多多：商品_482319937501']);
   });
 
-  it('已有同名时复用（不会建第二个）', async () => {
-    const { sink, gw } = gateway();
-    const parent = await gw.ensurePlatformDir('拼多多');
-    await gw.ensureSubdir(parent, '主图');
-    await gw.ensureSubdir(parent, '主图');
-    const entries = await sink.listDir(['拼多多']);
-    expect(entries.filter((e) => e.kind === 'directory')).toHaveLength(1);
+  it('downloads 模式（拿不到 rootId）也能定位，不会整单退回模板路径', async () => {
+    const sink = createMemorySink();
+    const gw = createFsGateway({ sink, rootId: async () => null });
+    await sink.ensureDir(['老名字_482319937501']);
+    const result = await gw.resolveProductFolder({
+      platform: '拼多多',
+      productId: '482319937501',
+      preferredName: '新名字_482319937501',
+    });
+    // 没有 rootId 就没有索引，但仍然靠 _ID 后缀扫回旧文件夹（ADR-6 的承诺）
+    expect(result.folderName).toBe('老名字_482319937501');
   });
 });
 
@@ -122,32 +126,20 @@ describe('FsGateway 读写', () => {
     expect(gw.sink).toBe(first);
     gw.setSink(second);
     expect(gw.sink).toBe(second);
-    await gw.writeText(['拼多多'], 'a.txt', 'hello');
-    expect(await first.readText(['拼多多'], 'a.txt')).toBeNull();
-    expect(await second.readText(['拼多多'], 'a.txt')).toBe('hello');
+    await gw.writeText(['商品_1'], 'a.txt', 'hello');
+    expect(await first.readText(['商品_1'], 'a.txt')).toBeNull();
+    expect(await second.readText(['商品_1'], 'a.txt')).toBe('hello');
   });
 
-  it('writeJson / readJson 往返', async () => {
+  it('没有文件时 readText 返回 null（第一次下载的正常情况）', async () => {
     const { gw } = gateway();
-    const dir = await gw.ensurePlatformDir('拼多多');
-    await gw.writeJson(dir, '.ecbox.json', { v: 1, productId: '123' });
-    expect(await gw.readJson<{ v: number }>(dir, '.ecbox.json')).toEqual({
-      v: 1,
-      productId: '123',
-    });
-  });
-
-  it('没有文件时 readJson 返回 null（第一次下载的正常情况）', async () => {
-    const { gw } = gateway();
-    const dir = await gw.ensurePlatformDir('拼多多');
-    expect(await gw.readJson(dir, '.ecbox.json')).toBeNull();
+    expect(await gw.readText(['商品_1'], '不存在.txt')).toBeNull();
   });
 
   it('写文件后 exists 返回大小', async () => {
     const { gw } = gateway();
-    const dir = await gw.ensurePlatformDir('拼多多');
-    await gw.writeText(dir, '商品信息.txt', '标题：连衣裙');
-    expect(await gw.exists(dir, '商品信息.txt')).toBeGreaterThan(0);
-    expect(await gw.exists(dir, '不存在.txt')).toBeNull();
+    await gw.writeText(['商品_1'], 'a.txt', '标题：连衣裙');
+    expect(await gw.exists(['商品_1'], 'a.txt')).toBeGreaterThan(0);
+    expect(await gw.exists(['商品_1'], '不存在.txt')).toBeNull();
   });
 });

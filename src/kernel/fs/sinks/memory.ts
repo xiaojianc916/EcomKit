@@ -167,15 +167,6 @@ export function createMemorySink(opts: MemorySinkOptions = {}): FsSink {
       target.files.delete(nameKey(name));
     },
 
-    async rename(dir: RelPath, from: string, to: string): Promise<void> {
-      const target = locate(dir, false);
-      const key = nameKey(from);
-      const file = target.files.get(key);
-      if (!file) throw new EcError('DIR_GONE', { reason: 'file-not-found' });
-      target.files.delete(key);
-      target.files.set(nameKey(to), { ...file, name: to, at: Date.now() });
-    },
-
     async exists(dir: RelPath, name: string): Promise<number | null> {
       let target: MemDir;
       try {

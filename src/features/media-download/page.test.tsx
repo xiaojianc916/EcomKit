@@ -415,7 +415,7 @@ describe('辅助纯函数', () => {
 
   it('toPlannerSettings 补齐 planner 需要的字段', () => {
     const s = toPlannerSettings(DEFAULT_MEDIA_DOWNLOAD_SETTINGS);
-    expect(s.byPlatform).toBe(true);
+    expect(s.folderTemplate).toBe('{platform}_商品ID_{id}');
     expect(s.dirNames.main).toBe('主图');
     expect(s.detailMinWidth).toBe(200);
   });
@@ -439,13 +439,22 @@ describe('MediaDownloadSettingsSection（§10.8 设置页）', () => {
     expect(screen.queryByText('模板必须包含 {id}')).toBeNull();
   });
 
-  it('勾选“按平台分文件夹”会回调', () => {
+  it('不再提供「按平台分文件夹」和「生成 商品信息.txt」两个选项', () => {
+    render(
+      <MediaDownloadSettingsSection value={DEFAULT_MEDIA_DOWNLOAD_SETTINGS} onChange={vi.fn()} />,
+    );
+    // 对应设置项已经从 settings schema 删掉：界面再留着就是勾了也没用的假开关
+    expect(screen.queryByRole('checkbox', { name: /按平台分文件夹/ })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /商品信息.txt/ })).toBeNull();
+  });
+
+  it('勾选“同时下载视频封面”会回调', () => {
     const onChange = vi.fn();
     render(
       <MediaDownloadSettingsSection value={DEFAULT_MEDIA_DOWNLOAD_SETTINGS} onChange={onChange} />,
     );
-    fireEvent.click(screen.getByRole('checkbox', { name: /按平台分文件夹/ }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ byPlatform: false }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /同时下载视频封面/ }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ videoCover: true }));
   });
 
   it('改子文件夹名称会回调', () => {

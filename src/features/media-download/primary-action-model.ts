@@ -3,7 +3,7 @@ import { errorMessage } from '../../kernel/errors/messages';
 import type { JobRecord } from '../../kernel/jobs/types';
 import type { DirStatus } from '../../kernel/messaging/protocol';
 import type { AssetKind } from '../../kernel/model/asset';
-import { formatBytes, formatCount, formatDateTime, formatDuration } from './format';
+import { formatBytes, formatCount, formatDuration } from './format';
 
 /**
  * 主按钮的文案与样式（§10.4「主按钮和附加说明」整张表）。
@@ -19,8 +19,7 @@ import { formatBytes, formatCount, formatDateTime, formatDuration } from './form
  * 4. 本商品自己的任务 —— 进度/失败/取消/中断，用户正盯着这一块；
  * 5. 什么都没勾选 —— 任何下载动作的前提；
  * 6. 目录 —— needs-grant / gone / unset，目录不对时下载必然失败；
- * 7. 历史记录 —— 告诉用户上次下过、还缺几个；
- * 8. 挑选模式 → 就绪（全部勾选 / 部分勾选）。
+ * 7. 挑选模式 → 就绪（全部勾选 / 部分勾选）。
  *
  * 为什么“没勾选”排在目录前面：主按钮如果写“选择保存位置并下载”，
  * 而实际上没有任何素材可下，用户点完选择文件夹还是下不了，等于骗了一次点击。
@@ -61,12 +60,6 @@ export interface PrimaryActionModel {
   metaAction: { label: string; action: PrimaryAction } | null;
 }
 
-export interface PrimaryHistory {
-  lastAt: number;
-  /** 和当前快照比较后还缺多少个 itemKey（§9.11 历史提示） */
-  missingCount: number;
-}
-
 export interface PrimaryActionState {
   /** 页面识别状态（pageStore.status） */
   status: 'resolving' | 'ready';
@@ -84,8 +77,6 @@ export interface PrimaryActionState {
   otherTabJob: JobRecord | null;
   /** 队列里排在这个任务前面的任务数 */
   queuedAhead: number;
-  /** 历史记录；没读过或者目录不是 ready 时为 null（§9.11：不 ready 不读，避免触发授权） */
-  history: PrimaryHistory | null;
   /** 授权小窗已经打开，等用户操作 */
   grantPending: boolean;
   /** 当前时间，显式传入以便单测不依赖系统时间 */
@@ -221,7 +212,6 @@ export function primaryActionModel(state: PrimaryActionState): PrimaryActionMode
     job: currentJob,
     otherTabJob,
     queuedAhead,
-    history,
     grantPending,
     now,
   } = state;
@@ -291,7 +281,7 @@ export function primaryActionModel(state: PrimaryActionState): PrimaryActionMode
       }
       case 'done': {
         const endedAt = currentJob.endedAt ?? now;
-        // 完成后只显示 3 秒“已保存 N 个文件”，之后回到历史状态（§10.4）
+        // 完成后只显示 3 秒“已保存 N 个文件”，之后落回挑选模式/就绪（§10.4）
         if (now - endedAt <= DONE_LABEL_TTL_MS) {
           // 跳过的文件也是「已经在磁盘上了」：重复下载时 done=0、skipped=20，
           // 只数 done 会显示「已保存 0 个文件」，看起来像什么都没做。
@@ -397,36 +387,7 @@ export function primaryActionModel(state: PrimaryActionState): PrimaryActionMode
     };
   }
 
-  // 7) 历史记录（§10.4 第 16–17 行）。目录不是 ready 时 history 为 null，走不到这里。
-  if (history) {
-    const lastAt = `上次下载于 ${formatDateTime(history.lastAt, now)}`;
-    if (history.missingCount > 0) {
-      return {
-        label: `补全 ${history.missingCount} 个文件`,
-        variant: 'accent',
-        disabled: false,
-        action: { kind: 'submit' },
-        secondary: null,
-        progress: null,
-        meta: [lastAt],
-        metaAction: null,
-      };
-    }
-    if (!picking) {
-      return {
-        label: '已全部下载',
-        variant: 'neutral',
-        disabled: false,
-        action: { kind: 'verify' },
-        secondary: null,
-        progress: null,
-        meta: [`${lastAt} · 点击可重新检查`],
-        metaAction: null,
-      };
-    }
-  }
-
-  // 8) 挑选模式（§10.4 第 4 行）
+  // 7) 挑选模式（§10.4 第 4 行）
   if (picking) {
     return {
       label: `下载所选 ${selectedKeys.length} 个`,
@@ -440,7 +401,7 @@ export function primaryActionModel(state: PrimaryActionState): PrimaryActionMode
     };
   }
 
-  // 9) 就绪（§10.4 第 2–3 行）
+  // 8) 就绪（§10.4 第 2–3 行）
   if (kindsWithAssets.length > 0 && kindsWithAssets.every((k) => selected.includes(k))) {
     return {
       label: `下载 ${selectedTotal} 个文件`,

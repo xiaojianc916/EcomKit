@@ -6,10 +6,8 @@ import { type PlannerSettings, planCounts, planDownload } from './planner';
 const NOW = new Date(2026, 10, 5, 9, 0).getTime();
 
 const SETTINGS: PlannerSettings = {
-  byPlatform: true,
-  folderTemplate: '{title:30}_{id}',
+  folderTemplate: '{platform}_商品ID_{id}',
   dirNames: { main: '主图', sku: 'SKU图', detail: '详情图', video: '视频' },
-  infoTxt: true,
   videoCover: false,
   detailMinWidth: 0,
 };
@@ -57,28 +55,42 @@ function plan(
   });
 }
 
-describe('文件夹（§9.1、§9.3）', () => {
-  it('按平台分文件夹（默认）', () => {
+describe('商品文件夹（§9.1、§9.3）', () => {
+  it('根目录下直接就是 平台_商品ID_商品ID，不再套平台目录层', () => {
     const p = plan(snapshot({ assets: images('main', 1) }), { kinds: ['main'] });
-    expect(p.folder[0]).toBe('拼多多');
-    // 标题不到 30 个字素，不截断
-    expect(p.folder[1]).toBe('夏季新款显瘦连衣裙女小个子法式复古方领泡泡袖碎花裙_482319937501');
+    expect(p.folder).toEqual(['拼多多_商品ID_482319937501']);
   });
 
-  it('{title:30} 按字素截断标题', () => {
+  it('模板里的 {platform} 用平台显示名', () => {
+    const p = plan(
+      snapshot({ assets: images('main', 1) }),
+      { kinds: ['main'] },
+      {
+        folderTemplate: '{platform}_{id}',
+      },
+    );
+    expect(p.folder).toEqual(['拼多多_482319937501']);
+  });
+
+  it('模板里的 {title} 按字素截断（§9.2）', () => {
     const long = '一二三四五六七八九十'.repeat(4); // 40 字素
-    const p = plan(snapshot({ title: long, assets: images('main', 1) }), { kinds: ['main'] });
-    expect(p.folder[1]).toBe(`${'一二三四五六七八九十'.repeat(3)}_482319937501`);
+    const p = plan(
+      snapshot({ title: long, assets: images('main', 1) }),
+      { kinds: ['main'] },
+      { folderTemplate: '{title:30}_{id}' },
+    );
+    expect(p.folder).toEqual([`${'一二三四五六七八九十'.repeat(3)}_482319937501`]);
   });
 
   it('截断按字素算，不会切出半个 emoji（§9.2）', () => {
-    // 每个 emoji 用 Intl.Segmenter 看是 1 个字素，但用 .length / 码点算会多出来
     const emoji = '👗';
-    const title = emoji.repeat(40);
-    const p = plan(snapshot({ title, assets: images('main', 1) }), { kinds: ['main'] });
-    const name = p.folder[1] ?? '';
+    const p = plan(
+      snapshot({ title: emoji.repeat(40), assets: images('main', 1) }),
+      { kinds: ['main'] },
+      { folderTemplate: '{title:30}_{id}' },
+    );
+    const name = p.folder[0] ?? '';
     const titlePart = name.slice(0, name.lastIndexOf('_'));
-
     expect(
       Array.from(new Intl.Segmenter('zh', { granularity: 'grapheme' }).segment(titlePart)),
     ).toHaveLength(30);
@@ -87,16 +99,6 @@ describe('文件夹（§9.1、§9.3）', () => {
       /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(titlePart),
     ).toBe(false);
     expect(titlePart).toBe(emoji.repeat(30));
-  });
-
-  it('关闭按平台分文件夹后直接放根目录', () => {
-    const p = plan(
-      snapshot({ assets: images('main', 1) }),
-      { kinds: ['main'] },
-      { byPlatform: false },
-    );
-    expect(p.folder).toHaveLength(1);
-    expect(p.folder[0]).toContain('_482319937501');
   });
 
   it('模板缺少 {id} 时抛错（ADR-6）', () => {
@@ -110,14 +112,25 @@ describe('文件夹（§9.1、§9.3）', () => {
   });
 });
 
-describe('编号（§9.5、§9.1）', () => {
-  it('编号以整个类别为基准：只选第 3 张详情图，文件名仍是 03', () => {
+describe('文件名（§9.1）', () => {
+  it('主图是 主图01，详情图是 详情图01', () => {
+    const p = plan(snapshot({ assets: [...images('main', 2), ...images('detail', 1)] }), {
+      kinds: ['main', 'detail'],
+    });
+    expect(p.items.map((i) => [i.stem, i.dir])).toEqual([
+      ['主图01', ['主图']],
+      ['主图02', ['主图']],
+      ['详情图01', ['详情图']],
+    ]);
+  });
+
+  it('编号以整个类别为基准：只选第 3 张详情图，文件名仍是 详情图03', () => {
     const p = plan(snapshot({ assets: images('detail', 26) }), {
       kinds: ['detail'],
       keys: ['detail-3'],
     });
     expect(p.items).toHaveLength(1);
-    expect(p.items[0]?.stem).toBe('03');
+    expect(p.items[0]?.stem).toBe('详情图03');
     expect(p.items[0]?.dir).toEqual(['详情图']);
   });
 
@@ -126,18 +139,18 @@ describe('编号（§9.5、§9.1）', () => {
       kinds: ['detail'],
       keys: ['detail-2', 'detail-5'],
     });
-    expect(p.items.map((i) => i.stem)).toEqual(['02', '05']);
+    expect(p.items.map((i) => i.stem)).toEqual(['详情图02', '详情图05']);
   });
 
   it('总数 ≥ 100 时补到三位', () => {
     const p = plan(snapshot({ assets: images('detail', 100) }), { kinds: ['detail'] });
-    expect(p.items[0]?.stem).toBe('001');
-    expect(p.items[99]?.stem).toBe('100');
+    expect(p.items[0]?.stem).toBe('详情图001');
+    expect(p.items[99]?.stem).toBe('详情图100');
   });
 
   it('总数 ≤ 99 时补到两位', () => {
     const p = plan(snapshot({ assets: images('detail', 9) }), { kinds: ['detail'] });
-    expect(p.items[0]?.stem).toBe('01');
+    expect(p.items[0]?.stem).toBe('详情图01');
   });
 });
 
@@ -148,7 +161,6 @@ describe('itemKey 唯一（§9.5）', () => {
         assets: [
           ...images('main', 3),
           ...images('detail', 3),
-          // 故意造一个跨类别相同的 key：itemKey 带类别前缀，仍然唯一
           asset({ key: 'shared', kind: 'main', index: 3 }),
         ],
       }),
@@ -182,14 +194,14 @@ describe('itemKey 唯一（§9.5）', () => {
       { kinds: ['main'] },
     );
     expect(p.items.map((i) => [i.itemKey, i.stem])).toEqual([
-      ['main:a', '01'],
-      ['main:b', '02'],
+      ['main:a', '主图01'],
+      ['main:b', '主图02'],
     ]);
   });
 });
 
 describe('SKU 图（§9.1）', () => {
-  it('文件名是 序号_规格', () => {
+  it('文件名是 SKU序号_规格', () => {
     const p = plan(
       snapshot({
         assets: [asset({ key: 'sku-a', kind: 'sku', index: 0 })],
@@ -214,14 +226,31 @@ describe('SKU 图（§9.1）', () => {
       }),
       { kinds: ['sku'] },
     );
-    expect(p.items[0]?.stem).toBe('01_杏色');
+    expect(p.items[0]?.stem).toBe('SKU01_杏色');
   });
 
   it('找不到规格标签时退化成纯序号', () => {
     const p = plan(snapshot({ assets: [asset({ key: 'sku-a', kind: 'sku', index: 0 })] }), {
       kinds: ['sku'],
     });
-    expect(p.items[0]?.stem).toBe('01');
+    expect(p.items[0]?.stem).toBe('SKU01');
+  });
+
+  it('多个 SKU 图各自带自己的规格文字', () => {
+    const p = plan(
+      snapshot({
+        assets: [
+          asset({ key: 'sku-a', kind: 'sku', index: 0 }),
+          asset({ key: 'sku-b', kind: 'sku', index: 1 }),
+        ],
+        skus: [
+          { id: '1', specs: [{ name: '颜色', value: '杏色' }], imageKey: 'sku-a' },
+          { id: '2', specs: [{ name: '颜色', value: '藏青' }], imageKey: 'sku-b' },
+        ],
+      }),
+      { kinds: ['sku'] },
+    );
+    expect(p.items.map((i) => i.stem)).toEqual(['SKU01_杏色', 'SKU02_藏青']);
   });
 });
 
@@ -232,9 +261,9 @@ describe('视频（§9.1、§9.9）', () => {
     asset({ key: 'v3', kind: 'video', index: 2 }),
   ];
 
-  it('主图视频、带名字的视频、无名视频各自的命名', () => {
+  it('视频统一是 视频序号，不区分主图视频还是讲解视频', () => {
     const p = plan(snapshot({ assets: videos }), { kinds: ['video'] });
-    expect(p.items.map((i) => i.stem)).toEqual(['主图视频', '讲解视频_02', '视频_03']);
+    expect(p.items.map((i) => i.stem)).toEqual(['视频01', '视频02', '视频03']);
   });
 
   it('expect 是 video', () => {
@@ -259,7 +288,7 @@ describe('视频（§9.1、§9.9）', () => {
       { videoCover: true },
     );
     expect(p.items).toHaveLength(2);
-    expect(p.items[1]?.stem).toBe('主图视频_封面');
+    expect(p.items[1]?.stem).toBe('视频01_封面');
     expect(p.items[1]?.expect).toBe('image');
   });
 
@@ -316,19 +345,10 @@ describe('详情图宽度过滤（§11 detailMinWidth）', () => {
   });
 });
 
-describe('extras（§9.5、§9.12）', () => {
-  it('总是写 .ecbox.json；开启后写商品信息.txt', () => {
+describe('计划里没有任何侧录文件（用户要求）', () => {
+  it('WritePlan 只有 folder 和 items，不含 extras', () => {
     const p = plan(snapshot({ assets: images('main', 1) }), { kinds: ['main'] });
-    expect(p.extras).toEqual(['folder-manifest', 'info-txt']);
-  });
-
-  it('关闭 infoTxt 时不写 txt', () => {
-    const p = plan(
-      snapshot({ assets: images('main', 1) }),
-      { kinds: ['main'] },
-      { infoTxt: false },
-    );
-    expect(p.extras).toEqual(['folder-manifest']);
+    expect(Object.keys(p).sort()).toEqual(['folder', 'items']);
   });
 });
 
