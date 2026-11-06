@@ -6,10 +6,10 @@ import { IconButton, INLINE_ICON_SIZE, Tooltip } from '../../../kernel/ui-kit';
 /**
  * ⑤ 保存位置（§10.3，高 32px）。
  *
- * 显示规则：路径从**中间省略**，保留开头的根目录名和结尾的商品 ID —— 这两段
- * 恰好是用户确认「存到哪」和「是不是这个商品」所需要的，中间的平台/模板部分省略掉。
- * 悬停显示完整路径。⧉ 复制路径（§10.5）：默认复制相对路径；
- * 设置里填了根目录绝对路径时复制完整路径，可以直接粘到资源管理器地址栏。
+ * 显示规则：显示**根目录绝对路径**（设置里填的那个），而不是每件商品各自的相对路径 ——
+ * 用户在这一行要回答的是「东西存到哪」，同一个根目录反复显示成不同的商品文件夹
+ * 反而看不出这是设置项。没填绝对路径时退回商品文件夹的相对路径。
+ * 悬停显示真正落盘的完整路径。⧉ 复制路径（§10.5）复制的也是完整路径。
  *
  * 还没有选择目录时显示「还没有选择保存位置」，点击直接打开授权小窗。
  */
@@ -36,6 +36,16 @@ export function fullPathFor(rootPath: string | undefined, relativePath: string):
   if (rootPath === undefined || rootPath.trim() === '') return relativePath;
   const root = rootPath.trim().replace(/[\\/]+$/, '');
   return `${root}\\${relativePath}`;
+}
+
+/**
+ * 「保存到」后面显示什么：根目录绝对路径优先。
+ * 没填绝对路径时浏览器只能拿到文件夹名字，那就退回商品文件夹的相对路径，
+ * 至少还能看出按「商品」归档的结构。
+ */
+export function saveTargetLabel(rootPath: string | undefined, relativePath: string): string {
+  const root = rootPath?.trim() ?? '';
+  return root === '' ? relativePath : root;
 }
 
 export function SaveBar({ dir, relativePath, rootPath, onOpenGrant, onCopy }: SaveBarProps) {
@@ -76,7 +86,7 @@ export function SaveBar({ dir, relativePath, rootPath, onOpenGrant, onCopy }: Sa
                 direction: 'ltr',
               }}
             >
-              {middleEllipsis(relativePath)}
+              {middleEllipsis(saveTargetLabel(rootPath, relativePath))}
             </span>
           </Tooltip>
           <Tooltip content={copied ? '已复制' : '复制路径'}>

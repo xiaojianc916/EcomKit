@@ -29,7 +29,8 @@ export function PanelSettingsView() {
       <div
         role="tablist"
         aria-label="设置分组"
-        style={{ display: 'flex', gap: 2, padding: '6px 12px 8px' }}
+        // 六个分组整体居中：一行摆满时居中和左对齐看不出差别，但窗口窄到换行时居中明显更稳
+        style={{ display: 'flex', gap: 2, padding: '6px 12px 8px', justifyContent: 'center' }}
       >
         {SETTINGS_SECTIONS.map((s) => {
           const active = s.id === section;

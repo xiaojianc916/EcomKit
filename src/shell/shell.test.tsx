@@ -1,6 +1,10 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { fullPathFor, middleEllipsis } from '../features/media-download/ui/SaveBar';
+import {
+  fullPathFor,
+  middleEllipsis,
+  saveTargetLabel,
+} from '../features/media-download/ui/SaveBar';
 import type { RegisteredFeature } from '../features/types';
 import type { ProductSnapshot } from '../kernel/model/product';
 import { BlockerNotice } from './BlockerNotice';
@@ -339,6 +343,19 @@ describe('FeatureTabs（§8.5 只有一个功能时不渲染标签栏）', () =>
 });
 
 describe('SaveBar 路径处理（§10.5 复制路径）', () => {
+  it('「保存到」显示根目录绝对路径，而不是每件商品的相对路径', () => {
+    expect(saveTargetLabel('D:\\电商素材', '拼多多_商品ID_1004831125244')).toBe('D:\\电商素材');
+  });
+
+  it('没填绝对路径时退回商品文件夹的相对路径', () => {
+    expect(saveTargetLabel(undefined, '拼多多_商品ID_1004831125244')).toBe(
+      '拼多多_商品ID_1004831125244',
+    );
+    expect(saveTargetLabel('   ', '拼多多_商品ID_1004831125244')).toBe(
+      '拼多多_商品ID_1004831125244',
+    );
+  });
+
   it('中间省略保留头部和尾部', () => {
     const long =
       '电商素材\\拼多多\\夏季新款显瘦连衣裙女小个子法式复古方领泡泡袖碎花裙_482319937501';

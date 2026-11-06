@@ -84,6 +84,13 @@ body {
   color: var(--fg-2);
   margin: 0 0 20px;
 }
+/* 共享表单组件自带 16px 横向内边距（面板里要和别的区块对齐），
+   设置页本身已经有 32px 页边距，这里去掉，免得每个设置项比页标题多缩进一截 */
+.opt__main .ec-field {
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .opt__field {
   display: flex;
   flex-direction: column;

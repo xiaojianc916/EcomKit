@@ -21,8 +21,14 @@ export type AssetRowStatus =
 
 export interface AssetRowModel {
   status: AssetRowStatus;
-  /** 数量的文字，等宽数字显示。“—” 用于识别中，“无”用于空类别 */
-  countText: string;
+  /**
+   * 数字文字，等宽显示。null 表示**不显示**。
+   *
+   * 就绪态返回 null：那一格原来写的是「这一类有几张」，而右边缩略图条的 +N
+   * 已经把这件事说清楚了（4 张图 + 「+5」就是 9 张），再放一个数字只是重复。
+   * 只有承载**进度信息**的状态（12/26、24/26 · 2 个失败、✓ 26）才需要数字。
+   */
+  countText: string | null;
   /** 右侧是否有行内“下载”文字按钮（§10.3 ④） */
   showDownload: boolean;
   /** 右侧是否有“重试”文字按钮（§10.4 部分失败） */
@@ -140,9 +146,10 @@ export function assetRowModel(input: AssetRowStateInput): AssetRowModel {
     };
   }
 
+  // 就绪：不显示数字（缩略图条上的 +N 已经表达了总数）
   return {
     status: { kind: 'ready' },
-    countText: String(total),
+    countText: null,
     showDownload: true,
     showRetry: false,
   };

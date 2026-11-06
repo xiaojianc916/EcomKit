@@ -8,6 +8,7 @@ import { sendMessage } from '../../kernel/messaging/runtime';
 import type { GlobalSettings } from '../../kernel/settings/schema';
 import { templateHasId } from '../../kernel/settings/schema';
 import { featureSettings, getSettings, setSettings } from '../../kernel/settings/store';
+import { Select } from '../../kernel/ui-kit';
 
 /**
  * 设置分组的内容（方案 §10.8、§11）。
@@ -35,6 +36,23 @@ export const SETTINGS_SECTIONS: readonly { id: SettingsSectionId; title: string 
   { id: 'advanced', title: '高级' },
   { id: 'about', title: '关于' },
 ];
+
+const SAVE_MODE_OPTIONS = [
+  { value: 'fsa', label: '自选文件夹（推荐）' },
+  { value: 'downloads', label: '浏览器下载目录' },
+] as const;
+
+const AUTO_OPEN_OPTIONS = [
+  { value: 'panel', label: '展开面板' },
+  { value: 'handle', label: '只显示把手' },
+  { value: 'hidden', label: '不显示' },
+] as const;
+
+const THEME_OPTIONS = [
+  { value: 'system', label: '跟随系统' },
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
+] as const;
 
 export interface SettingsDraft {
   /** 还没读回来时为 null */
@@ -127,16 +145,14 @@ function SaveSection({
     <>
       <div className="ec-field">
         <span className="ec-field__label">保存方式</span>
-        <select
-          className="ec-select"
+        <Select
+          label="保存方式"
           value={settings.save.mode}
-          onChange={(e) =>
-            update({ save: { ...settings.save, mode: e.target.value as 'fsa' | 'downloads' } })
+          options={SAVE_MODE_OPTIONS}
+          onChange={(mode) =>
+            update({ save: { ...settings.save, mode: mode as 'fsa' | 'downloads' } })
           }
-        >
-          <option value="fsa">自选文件夹（推荐）</option>
-          <option value="downloads">浏览器下载目录</option>
-        </select>
+        />
         <span className="ec-field__hint">
           选「浏览器下载目录」时，请关闭浏览器的「下载前询问每个文件的保存位置」，否则每个文件都会弹一次对话框。
         </span>
@@ -295,38 +311,32 @@ function ShellSection({
     <>
       <div className="ec-field">
         <span className="ec-field__label">进入商品页时</span>
-        <select
-          className="ec-select"
+        <Select
+          label="进入商品页时"
           value={settings.shell.autoOpen}
-          onChange={(e) =>
+          options={AUTO_OPEN_OPTIONS}
+          onChange={(autoOpen) =>
             update({
               shell: {
                 ...settings.shell,
-                autoOpen: e.target.value as 'panel' | 'handle' | 'hidden',
+                autoOpen: autoOpen as 'panel' | 'handle' | 'hidden',
               },
             })
           }
-        >
-          <option value="panel">展开面板</option>
-          <option value="handle">只显示把手</option>
-          <option value="hidden">不显示</option>
-        </select>
+        />
       </div>
       <div className="ec-field">
         <span className="ec-field__label">主题</span>
-        <select
-          className="ec-select"
+        <Select
+          label="主题"
           value={settings.shell.theme}
-          onChange={(e) =>
+          options={THEME_OPTIONS}
+          onChange={(theme) =>
             update({
-              shell: { ...settings.shell, theme: e.target.value as 'system' | 'light' | 'dark' },
+              shell: { ...settings.shell, theme: theme as 'system' | 'light' | 'dark' },
             })
           }
-        >
-          <option value="system">跟随系统</option>
-          <option value="light">浅色</option>
-          <option value="dark">深色</option>
-        </select>
+        />
       </div>
     </>
   );

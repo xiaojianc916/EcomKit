@@ -44,9 +44,9 @@ describe('assetRowModel（§10.4 素材行表）', () => {
     expect(m.showDownload).toBe(false);
   });
 
-  it('就绪：显示数量加下载', () => {
+  it('就绪：不显示数字（总数由缩略图条的 +N 表达），只给下载', () => {
     const m = assetRowModel(base);
-    expect(m.countText).toBe('26');
+    expect(m.countText).toBeNull();
     expect(m.showDownload).toBe(true);
   });
 

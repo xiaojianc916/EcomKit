@@ -148,6 +148,15 @@ describe('素材行交互（§10.3 素材行交互表）', () => {
     expect(handlers.onExpand).toHaveBeenCalledWith('main');
   });
 
+  it('数量为 0 的行不能展开（展开也是空的）', () => {
+    const handlers = renderList({ mainCount: 8, detailCount: 0 });
+    const detailRow = screen.getByRole('listitem', { name: '详情图' });
+    const expander = within(detailRow).getByRole('button', { name: '展开详情图' });
+    expect(expander).toBeDisabled();
+    fireEvent.click(expander);
+    expect(handlers.onExpand).not.toHaveBeenCalled();
+  });
+
   it('数量为 0 的行按空格不切换勾选', () => {
     const handlers = renderList({ detailCount: 0 });
     const detailRow = screen.getByRole('listitem', { name: '详情图' });

@@ -396,8 +396,7 @@
   word-break: break-all;
 }
 
-.ec-input,
-.ec-select {
+.ec-input {
   height: 32px;
   padding: 0 8px;
   border: 1px solid var(--ec-line);
@@ -408,10 +407,88 @@
   font-size: var(--ec-fs-13);
 }
 
-.ec-input:focus-visible,
+.ec-input:focus-visible {
+  border-color: var(--ec-accent);
+  outline: none;
+}
+
+/* 下拉：按钮 + 自绘列表（原生 <select> 的弹层由系统绘制，样式够不到） */
+.ec-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--ec-line);
+  border-radius: var(--ec-radius-control);
+  background: var(--ec-bg);
+  color: var(--ec-text);
+  font-family: var(--ec-font);
+  font-size: var(--ec-fs-13);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    background-color 120ms ease-out;
+}
+
+.ec-select:hover {
+  background: var(--ec-bg-subtle);
+}
+
+/* 展开态/键盘焦点：强调色边框，而不是浏览器默认的蓝框 */
+.ec-select[aria-expanded="true"],
 .ec-select:focus-visible {
-  outline: 2px solid var(--ec-accent);
-  outline-offset: 1px;
+  border-color: var(--ec-accent);
+  outline: none;
+  background: var(--ec-bg);
+}
+
+.ec-select:focus-visible {
+  box-shadow: 0 0 0 1px var(--ec-accent);
+}
+
+.ec-select__list {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--ec-line);
+  border-radius: var(--ec-radius-control);
+  background: var(--ec-bg);
+  box-shadow: var(--ec-shadow-panel);
+}
+
+.ec-select__option {
+  display: block;
+  width: 100%;
+  padding: 0 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ec-text);
+  font-family: var(--ec-font);
+  font-size: var(--ec-fs-13);
+  line-height: 28px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 悬停和键盘高亮用同一套底色：用户看不出「我在用鼠标还是在用键盘」 */
+.ec-select__option:hover,
+.ec-select__option[data-active="true"] {
+  background: var(--ec-bg-subtle);
+}
+
+.ec-select__option[aria-selected="true"] {
+  color: var(--ec-accent);
+  font-weight: var(--ec-fw-strong);
 }
 
 /* 等宽数字（§10.6 字体） */

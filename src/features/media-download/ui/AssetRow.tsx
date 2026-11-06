@@ -144,10 +144,16 @@ export const AssetRow = memo(function AssetRow(props: AssetRowProps) {
         borderTop: '1px solid var(--ec-line)',
       }}
     >
+      {/*
+        空类别不给可点的覆盖层：展开一个没有素材的网格只会得到一块空白，
+        还会把「无」这一行变成看起来能点开的东西。占位层保留（pointerEvents: none），
+        行高和分隔线不受影响。
+      */}
       <button
         type="button"
-        aria-expanded={expanded}
+        aria-expanded={disabled ? undefined : expanded}
         aria-label={`${expanded ? '收起' : '展开'}${label}`}
+        disabled={disabled}
         onClick={() => onToggleExpand(kind)}
         onKeyDown={handleRowKeyDown}
         style={{
@@ -157,7 +163,8 @@ export const AssetRow = memo(function AssetRow(props: AssetRowProps) {
           padding: 0,
           border: 'none',
           background: 'transparent',
-          cursor: 'pointer',
+          cursor: disabled ? 'default' : 'pointer',
+          pointerEvents: disabled ? 'none' : 'auto',
         }}
       />
       <span style={{ position: 'relative', zIndex: 1, display: 'flex' }}>
@@ -178,13 +185,15 @@ export const AssetRow = memo(function AssetRow(props: AssetRowProps) {
 
       <span style={{ flex: 1, pointerEvents: 'none' }} />
 
-      {/* 数量：等宽数字（§10.6 字体） */}
-      <span
-        className="ec-num"
-        style={{ fontSize: 12, color: 'var(--ec-text-2)', whiteSpace: 'nowrap' }}
-      >
-        {model.countText}
-      </span>
+      {/* 数量：只在承载进度信息时显示（就绪态由右侧缩略图条的 +N 表达总数，§10.3） */}
+      {model.countText === null ? null : (
+        <span
+          className="ec-num"
+          style={{ fontSize: 12, color: 'var(--ec-text-2)', whiteSpace: 'nowrap' }}
+        >
+          {model.countText}
+        </span>
+      )}
 
       {/* 右半部分：下载中换成细进度条，否则是缩略图条（§10.4 素材行） */}
       {model.status.kind === 'progress' ? (
