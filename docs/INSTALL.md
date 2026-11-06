@@ -70,7 +70,7 @@ Edge 目前还保留 `--load-extension` 兼容路径，两种方式都行。
 改完代码后：
 
 ```powershell
-pnpm build                    # 重新构建
+bun run build                 # 重新构建
 node scripts/install-extension.mjs chrome --keep-open
 ```
 

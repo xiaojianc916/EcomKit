@@ -7,6 +7,6 @@
 （`navigator.storage.getDirectory()`），测试结束后校验生成的目录树。
 
 ```bash
-pnpm build          # 先构建
-pnpm test:e2e
+bun run build          # 先构建
+bun run test:e2e
 ```

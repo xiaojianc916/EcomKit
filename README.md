@@ -12,11 +12,11 @@ Chrome / Edge MV3，Windows 10 22H2 与 Windows 11，浏览器 122 及以上。
 ## 快速开始
 
 ```bash
-pnpm install
-node scripts/gen-key.ts     # 生成固定扩展 ID 的密钥对（只需一次）
-pnpm dev                    # 启动带扩展的 Chrome，支持热更新
-pnpm check                  # Biome + TypeScript + dependency-cruiser + 单元测试
-pnpm build                  # 产物在 .output/chrome-mv3/
+bun install
+bun run gen:key             # 生成固定扩展 ID 的密钥对（只需一次）
+bun run dev                 # 启动带扩展的 Chrome，支持热更新
+bun run check               # Biome + TypeScript + dependency-cruiser + 单元测试
+bun run build               # 产物在 .output/chrome-mv3/
 ```
 
 ## 安装

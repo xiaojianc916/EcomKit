@@ -56,10 +56,10 @@ function main(): void {
   }
 
   console.log('构建中…');
-  sh('pnpm build');
+  sh('bun run build');
 
   console.log('打包中…');
-  sh('pnpm zip');
+  sh('bun run zip');
 
   const zipDir = join(root, '.output');
   const zips = existsSync(zipDir)

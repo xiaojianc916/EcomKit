@@ -34,17 +34,11 @@ async function main(): Promise<void> {
 
   // 3. 交给 wxt（透传环境变量）
   //
-  // 用 spawnSync 而不是 execSync：Windows 上 pnpm 装的是 .cmd 启动器，execSync 会经
-  // cmd.exe 再解析一次命令串；spawnSync + shell 只交给一次 shell，且能拿到真实退出码。
-  // 旧实现不检查退出码 —— 构建失败时脚本本身仍返回 0，CI 上看不出来。
-  // 整串交给 shell（而不是「命令 + 参数数组 + shell」）：后者在 Node 22 会触发
-  // DEP0190（参数不转义直接拼接），而且 .cmd 启动器本来也只能由 shell 执行。
-  const result = spawnSync('pnpm exec wxt build', {
-    cwd: root,
-    stdio: 'inherit',
-    env: process.env,
-    shell: true,
-  });
+  // 直接调本地 bin：不带 shell 就没有 Windows 上的 .cmd 再解析一遍的问题，
+  // 参数数组也不触发 Node 22 的 DEP0190。旧实现不检查退出码 —— 构建失败时
+  // 脚本本身仍返回 0，CI 上看不出来。
+  const bin = join(root, 'node_modules', '.bin', 'wxt');
+  const result = spawnSync(bin, ['build'], { cwd: root, stdio: 'inherit', env: process.env });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exitCode = result.status ?? 1;
 }
