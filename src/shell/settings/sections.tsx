@@ -248,7 +248,14 @@ function MediaSection() {
   };
   const [Section, setSection] = useState<ComponentType<SectionProps> | null>(null);
   const [value, setValue] = useState<MediaDownloadSettings>(DEFAULT_MEDIA_DOWNLOAD_SETTINGS);
-  const [saved, setSaved] = useState(false);
+  /**
+   * 只在**写盘失败**时给提示。
+   *
+   * 成功时什么都不显示：这类设置改一下就存一下，弹一次「已保存」纯属噪音，
+   * 而且它是浮动的 —— 用户下一秒改了别的地方它还在，反而分不清是哪一次的结果。
+   * 失败必须说话：否则用户以为存上了，下次下载才发现没生效。
+   */
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -265,7 +272,9 @@ function MediaSection() {
         defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
       }).get();
       if (alive) setValue(current);
-    })().catch(() => {});
+    })().catch((e) => {
+      if (alive) setSaveError(`读取素材设置失败：${describeSettingsError(e)}`);
+    });
     return () => {
       alive = false;
     };
@@ -279,11 +288,8 @@ function MediaSection() {
       defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
     })
       .set(next)
-      .then(() => {
-        setSaved(true);
-        setTimeout(() => setSaved(false), 1500);
-      })
-      .catch(() => {});
+      .then(() => setSaveError(null))
+      .catch((e) => setSaveError(`保存失败：${describeSettingsError(e)}`));
   };
 
   return (
@@ -291,13 +297,19 @@ function MediaSection() {
       {Section === null ? (
         <p className="ec-field__hint">正在读取素材设置…</p>
       ) : (
-        <div className="ec-field">
-          <Section value={value} onChange={onChange} />
-        </div>
+        <Section value={value} onChange={onChange} />
       )}
-      {saved ? <p className="ec-field__hint">已保存</p> : null}
+      {saveError === null ? null : <p className="ec-field__error">{saveError}</p>}
     </>
   );
+}
+
+/** 设置读写失败时给人看的一句话（不显示异常原始 message，§6.2） */
+function describeSettingsError(e: unknown): string {
+  const code = (e as { code?: string } | null)?.code;
+  if (code === 'DISK_FULL') return '磁盘空间不足';
+  if (code === 'WRITE_FAILED') return '写入失败，请检查磁盘权限';
+  return '设置没有存下来，请重试';
 }
 
 function ShellSection({

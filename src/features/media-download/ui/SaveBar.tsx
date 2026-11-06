@@ -6,10 +6,9 @@ import { IconButton, INLINE_ICON_SIZE, Tooltip } from '../../../kernel/ui-kit';
 /**
  * ⑤ 保存位置（§10.3，高 32px）。
  *
- * 显示规则：显示**根目录绝对路径**（设置里填的那个），而不是每件商品各自的相对路径 ——
- * 用户在这一行要回答的是「东西存到哪」，同一个根目录反复显示成不同的商品文件夹
- * 反而看不出这是设置项。没填绝对路径时退回商品文件夹的相对路径。
- * 悬停显示真正落盘的完整路径。⧉ 复制路径（§10.5）复制的也是完整路径。
+ * 显示规则：「根文件夹名 \ 商品文件夹」—— 根文件夹名是用户在授权小窗里**真正选中的**
+ * 那个目录（浏览器只知道名字），商品文件夹是按模板生成的子目录。
+ * 悬停和复制给出完整绝对路径：设置里填了根目录绝对路径就拼上，没填就只给相对部分。
  *
  * 还没有选择目录时显示「还没有选择保存位置」，点击直接打开授权小窗。
  */
@@ -39,13 +38,18 @@ export function fullPathFor(rootPath: string | undefined, relativePath: string):
 }
 
 /**
- * 「保存到」后面显示什么：根目录绝对路径优先。
- * 没填绝对路径时浏览器只能拿到文件夹名字，那就退回商品文件夹的相对路径，
- * 至少还能看出按「商品」归档的结构。
+ * 「保存到」后面显示什么：**用户在授权小窗里真正选中的那个文件夹**，加上商品子文件夹。
+ *
+ * 为什么不用设置里手填的「根目录绝对路径」：那是给「复制完整路径」用的辅助输入，
+ * 用户实际用 FSA 选的是哪个文件夹，浏览器只知道它的**名字**（dir.name），
+ * 手填的路径完全可能是另一回事 —— 拿它当保存位置显示就是在骗人。
+ * 手填路径只在悬停和复制时拼成完整路径（见 fullPathFor）。
  */
-export function saveTargetLabel(rootPath: string | undefined, relativePath: string): string {
-  const root = rootPath?.trim() ?? '';
-  return root === '' ? relativePath : root;
+export function saveTargetLabel(rootName: string | undefined, relativePath: string): string {
+  const name = rootName?.trim() ?? '';
+  if (name === '') return relativePath;
+  // Windows 资源管理器里看到的层级就是这个形状
+  return `${name}\\${relativePath}`;
 }
 
 export function SaveBar({ dir, relativePath, rootPath, onOpenGrant, onCopy }: SaveBarProps) {
@@ -86,7 +90,7 @@ export function SaveBar({ dir, relativePath, rootPath, onOpenGrant, onCopy }: Sa
                 direction: 'ltr',
               }}
             >
-              {middleEllipsis(saveTargetLabel(rootPath, relativePath))}
+              {middleEllipsis(saveTargetLabel(dir.name, relativePath))}
             </span>
           </Tooltip>
           <Tooltip content={copied ? '已复制' : '复制路径'}>

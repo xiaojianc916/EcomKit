@@ -65,6 +65,18 @@ describe('Select', () => {
     expect(notCanceled).toBe(false);
   });
 
+  it('弹层挂到 body（portal），不会被面板的 overflow 裁掉', () => {
+    render(<Select label="测试" value="a" options={OPTIONS} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('combobox', { name: '测试' }));
+    const list = screen.getByRole('listbox');
+    // 挂在 body 下而不是组件自己的容器里：面板滚动区是 overflow:auto，留在里面会被裁
+    expect(list.parentElement).toBe(document.body);
+    // 坐标由组件按按钮位置算好写进 style（fixed 定位在 .ec-select__list 类里）
+    expect(list).toHaveClass('ec-select__list');
+    expect(list.style.left).not.toBe('');
+    expect(list.style.top).not.toBe('');
+  });
+
   it('展开时 aria-expanded 为 true（边框强调色靠这个属性切换）', () => {
     render(<Select label="测试" value="a" options={OPTIONS} onChange={vi.fn()} />);
     const box = screen.getByRole('combobox', { name: '测试' });

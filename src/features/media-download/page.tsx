@@ -4,6 +4,8 @@ import type { ErrorCode } from '../../kernel/errors/codes';
 import type { JobRecord } from '../../kernel/jobs/types';
 import type { AssetKind } from '../../kernel/model/asset';
 import type { ProductSnapshot } from '../../kernel/model/product';
+import { templateHasId } from '../../kernel/settings/schema';
+import { Checkbox } from '../../kernel/ui-kit';
 import type { PageApi, PageFeature, PanelProps, QuickAction } from '../types';
 import {
   createMediaStore,
@@ -583,79 +585,78 @@ export function MediaDownloadSettingsSection({
   const patch = (part: Partial<MediaDownloadSettings>): void => onChange({ ...value, ...part });
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <span>商品文件夹模板</span>
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {/*
+        这一组表单的样式**必须和设置页其它分组完全一致**：一律用 ui-kit 的
+        ec-field / ec-input / ec-checkbox，不写任何内联边框和内边距。
+        旧实现自己画了一套 1px 灰框的 input，和上下几组的控件长得不一样。
+      */}
+      <div className="ec-field">
+        <span className="ec-field__label">商品文件夹模板</span>
         <input
+          className="ec-input"
           type="text"
           value={value.folderTemplate}
           onChange={(e) => patch({ folderTemplate: e.target.value })}
-          style={{
-            height: 32,
-            padding: '0 8px',
-            border: '1px solid var(--ec-line)',
-            borderRadius: 6,
-          }}
         />
         {/* 模板必须含 {id}（ADR-6），缺少时立刻报错，不要让用户存下一个定位不到的模板 */}
-        {/{id(?::d+)?}/.test(value.folderTemplate) ? null : (
-          <span style={{ color: 'var(--ec-danger)', fontSize: 12 }}>模板必须包含 {'{id}'}</span>
+        {templateHasId(value.folderTemplate) ? null : (
+          <span className="ec-field__error">模板缺少 {'{id}'}，无法按商品 ID 定位文件夹</span>
         )}
-      </label>
+        <span className="ec-field__hint">
+          可用变量：{'{platform} {shop:N} {title:N} {id} {date}'}
+        </span>
+      </div>
 
-      <fieldset style={{ border: 'none', padding: 0, margin: 0 }}>
-        <legend style={{ fontSize: 12, color: 'var(--ec-text-2)' }}>子文件夹名称</legend>
+      <div className="ec-field">
+        <span className="ec-field__label">子文件夹名称</span>
         {(['main', 'sku', 'detail', 'video'] as const).map((kind) => (
-          <label key={kind} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-            <span style={{ width: 60 }}>{KIND_ORDER.includes(kind) ? kindNameOf(kind) : kind}</span>
+          <label
+            key={kind}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', marginTop: 4 }}
+          >
+            <span style={{ width: 60, flex: 'none', color: 'var(--ec-text-2)' }}>
+              {kindNameOf(kind)}
+            </span>
             <input
+              className="ec-input"
               type="text"
               value={value.dirNames[kind]}
               onChange={(e) => patch({ dirNames: { ...value.dirNames, [kind]: e.target.value } })}
-              style={{
-                height: 32,
-                padding: '0 8px',
-                border: '1px solid var(--ec-line)',
-                borderRadius: 6,
-              }}
             />
           </label>
         ))}
-      </fieldset>
+      </div>
 
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <input
-          type="checkbox"
+      <div className="ec-field">
+        <span className="ec-field__label">转换</span>
+        <CheckLine
+          label="WebP、AVIF 转成 JPG"
           checked={value.toJpeg}
-          onChange={(e) => patch({ toJpeg: e.target.checked })}
+          onChange={(checked) => patch({ toJpeg: checked })}
         />
-        <span>WebP、AVIF 转成 JPG</span>
-      </label>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <input
-          type="checkbox"
+        <CheckLine
+          label="同时下载视频封面"
           checked={value.videoCover}
-          onChange={(e) => patch({ videoCover: e.target.checked })}
+          onChange={(checked) => patch({ videoCover: checked })}
         />
-        <span>同时下载视频封面</span>
-      </label>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span>详情图最小宽度</span>
-        <input
-          type="number"
-          min={0}
-          value={value.detailMinWidth}
-          onChange={(e) => patch({ detailMinWidth: Number(e.target.value) || 0 })}
-          style={{
-            width: 96,
-            height: 32,
-            padding: '0 8px',
-            border: '1px solid var(--ec-line)',
-            borderRadius: 6,
-          }}
-        />
-        <span style={{ fontSize: 12, color: 'var(--ec-text-2)' }}>px</span>
-      </label>
+      </div>
+
+      <div className="ec-field">
+        <span className="ec-field__label">详情图最小宽度</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
+          <input
+            className="ec-input"
+            type="number"
+            min={0}
+            style={{ width: 96 }}
+            value={value.detailMinWidth}
+            onChange={(e) => patch({ detailMinWidth: Number(e.target.value) || 0 })}
+          />
+          <span className="ec-field__hint">px</span>
+        </div>
+        <span className="ec-field__hint">窄于这个宽度的详情图不会下载，0 表示不限制。</span>
+      </div>
     </div>
   );
 }
@@ -672,3 +673,44 @@ const mediaDownloadPage: PageFeature<MediaDownloadSettings> = {
 };
 
 export default mediaDownloadPage;
+
+/**
+ * 一行「复选框 + 文字」，整行可点。
+ *
+ * 为什么不用 <label>：Radix 的 Checkbox 渲染的是 <button role="checkbox">，
+ * <label> 关联不到它（点文字不会切换，biome 也会报 noLabelWithoutControl）。
+ * 这里把文字交给 Checkbox 自己的可访问名字，再用一个真 <button> 承担点击 ——
+ * 键盘用户 Tab 到复选框，鼠标用户点哪儿都行。
+ */
+function CheckLine({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange(checked: boolean): void;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+      <Checkbox label={label} checked={checked} onCheckedChange={onChange} />
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        style={{
+          padding: 0,
+          border: 'none',
+          background: 'transparent',
+          color: 'var(--ec-text)',
+          fontFamily: 'inherit',
+          fontSize: 'var(--ec-fs-13)',
+          lineHeight: '20px',
+          textAlign: 'left',
+          cursor: 'pointer',
+        }}
+      >
+        {label}
+      </button>
+    </div>
+  );
+}

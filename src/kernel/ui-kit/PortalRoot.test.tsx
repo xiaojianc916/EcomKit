@@ -57,6 +57,40 @@ describe('PortalRoot（§10.10 弹层挂进 shadow root）', () => {
     expect(screen.getByTestId('container').textContent).toBe('has');
     expect(screen.getByTestId('target').textContent).toBe('has');
   });
+
+  it('内层不传 value 时**沿用**外层的容器（不能把 shadow root 抹成 null）', () => {
+    /*
+      真实结构：index.tsx 的 PortalRoot(shadow) → Shell → 面板里的 PortalRoot(未传 value)。
+      旧实现内层用 `value ?? null` 写回，外层那个 shadow root 就被抹成 null，
+      所有弹层掉到 document.body 上拿不到 shadow 内样式 ——
+      下拉列表会完全没样式（选项被压成一条 23px）。
+    */
+    const host = document.createElement('div');
+    const shadow = host.attachShadow({ mode: 'open' });
+    render(
+      <PortalRoot value={shadow}>
+        <PortalRoot>
+          <Probe />
+        </PortalRoot>
+      </PortalRoot>,
+    );
+    expect(screen.getByTestId('container').textContent).toBe('has');
+    expect(screen.getByTestId('target').textContent).toBe('has');
+  });
+
+  it('内层可以显式换成另一层容器', () => {
+    const outerHost = document.createElement('div');
+    const outerShadow = outerHost.attachShadow({ mode: 'open' });
+    const inner = document.createElement('div');
+    render(
+      <PortalRoot value={outerShadow}>
+        <PortalRoot value={inner}>
+          <Probe />
+        </PortalRoot>
+      </PortalRoot>,
+    );
+    expect(screen.getByTestId('container').textContent).toBe('has');
+  });
 });
 
 describe('ToastViewport（§10.5 提示条）', () => {

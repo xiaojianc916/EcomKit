@@ -19,9 +19,19 @@ export interface PortalRootProps {
   children?: ReactNode;
 }
 
+/**
+ * 套一层容器。
+ *
+ * **不传 value 时不覆盖外层已经设好的容器**：外壳的结构是
+ *   index.tsx: PortalRoot(shadow) → Shell → PortalRoot(未传 value) → 面板
+ * 如果内层直接用 `value ?? null` 写回去，外层那个 shadow root 就被抹成了 null，
+ * 于是所有弹层（Tooltip、下拉列表）都掉到 document.body 上，拿不到 shadow 内的样式 ——
+ * 表现就是「下拉选项完全没有样式、被压成一条」。
+ */
 export function PortalRoot({ value, children }: PortalRootProps) {
+  const inherited = useContext(PortalContainerContext);
   return (
-    <PortalContainerContext.Provider value={value ?? null}>
+    <PortalContainerContext.Provider value={value ?? inherited}>
       {children}
     </PortalContainerContext.Provider>
   );
@@ -35,9 +45,7 @@ export function usePortalContainer(): HTMLElement | ShadowRoot | null {
 /**
  * 转成 Radix Portal 的 container prop。
  * Radix 接受 HTMLElement | DocumentFragment；ShadowRoot 是 DocumentFragment 的子类型，
- * 所以这里不需要分支判断 —— 直接透传即可（旧实现写了一个
- * \`container instanceof ShadowRoot ? container : container\` 的三元，两个分支返回同一个值，
- * 实际等价于 \`return container\`，留着只会让人以为这里真的做了什么映射）。
+ * 所以这里不需要分支判断 —— 直接透传即可。
  */
 export function usePortalTarget(): HTMLElement | DocumentFragment | undefined {
   return usePortalContainer() ?? undefined;

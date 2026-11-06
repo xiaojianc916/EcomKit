@@ -72,6 +72,13 @@
   --ec-thumb-sm: 32px;
   --ec-thumb-grid: 72px;
 
+  /*
+   * 滚动条滑块（§10.6）。用半透明黑/白而不是实色：同一份令牌在浅色底上
+   * 表现为浅灰，在深色底上表现为浅亮灰，不用为两套主题各写一条。
+   */
+  --ec-scrollbar: rgba(15, 20, 30, 0.22);
+  --ec-scrollbar-hover: rgba(15, 20, 30, 0.38);
+
   /* 动效（§10.6 动效）：展开收起 160ms ease-out */
   --ec-motion: 160ms ease-out;
 
@@ -88,6 +95,9 @@
     --ec-text: #e8eaed;
     --ec-text-2: #a9aeb6;
     --ec-text-3: #8f959e;
+    /* 深色底上换成半透明白，否则滑块是一块看不出边界的黑 */
+    --ec-scrollbar: rgba(232, 234, 237, 0.24);
+    --ec-scrollbar-hover: rgba(232, 234, 237, 0.42);
     color-scheme: dark;
   }
 }
@@ -100,6 +110,8 @@
   --ec-text: #e8eaed;
   --ec-text-2: #a9aeb6;
   --ec-text-3: #8f959e;
+  --ec-scrollbar: rgba(232, 234, 237, 0.24);
+  --ec-scrollbar-hover: rgba(232, 234, 237, 0.42);
   color-scheme: dark;
 }
 
@@ -110,6 +122,8 @@
   --ec-text: #1f2329;
   --ec-text-2: #5c6370;
   --ec-text-3: #8f959e;
+  --ec-scrollbar: rgba(15, 20, 30, 0.22);
+  --ec-scrollbar-hover: rgba(15, 20, 30, 0.38);
   color-scheme: light;
 }
 

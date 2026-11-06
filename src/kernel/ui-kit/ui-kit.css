@@ -379,6 +379,13 @@
   color: var(--ec-text-3);
 }
 
+/* 错误提示：只有出错才出现（成功一律不弹提示，见 MediaSection 的说明） */
+.ec-field__error {
+  font-size: var(--ec-fs-12);
+  line-height: 16px;
+  color: var(--ec-danger);
+}
+
 .ec-field__value {
   font-size: var(--ec-fs-13);
   color: var(--ec-text-2);
@@ -450,24 +457,32 @@
   box-shadow: 0 0 0 1px var(--ec-accent);
 }
 
+/*
+ * 弹层挂在 portal 里（shadow root / body），坐标由组件按按钮位置算好写进 style。
+ * 用 fixed 而不是 absolute：绝对定位会跟着滚动区走、还会被 overflow: auto 裁掉，
+ * 面板滚动时弹层就卡在原地不动了。
+ */
 .ec-select__list {
-  position: absolute;
-  z-index: 2;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
+  position: fixed;
+  z-index: 2147483646;
   margin: 0;
   padding: 4px;
-  list-style: none;
   border: 1px solid var(--ec-line);
   border-radius: var(--ec-radius-control);
   background: var(--ec-bg);
   box-shadow: var(--ec-shadow-panel);
+  font-family: var(--ec-font);
+  font-size: var(--ec-fs-13);
+  line-height: 20px;
+  color: var(--ec-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .ec-select__option {
   display: block;
   width: 100%;
+  /* 定高而不是靠 line-height 撑：line-height 会被外层继承值影响，选项会挤成一条 */
+  height: 28px;
   padding: 0 8px;
   border: none;
   border-radius: 4px;
@@ -477,6 +492,9 @@
   font-size: var(--ec-fs-13);
   line-height: 28px;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 
@@ -509,6 +527,48 @@
   line-height: 1;
   white-space: nowrap;
 }
+/*
+ * ---------- 细滚动条（§10.6） ----------
+ *
+ * 面板嵌在别人的商品页里，系统滚动条（16px、带箭头和轨道）在这个尺度上太抢眼。
+ * 这里画成 6px 的无轨道细条：只有一个圆角深色滑块，低调但不至于找不到。
+ * 两套都写：Firefox 认标准属性，Chromium/Edge 认 ::-webkit-scrollbar。
+ */
+/*
+ * 选择器带 `:root`：面板在 shadow root 里（.ec-root），设置页 / popup 是独立页面
+ * （<html> 根，没有 .ec-root 类）。两个都写上，四种界面才是同一条滚动条。
+ */
+.ec-root,
+:root {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ec-scrollbar) transparent;
+}
+
+/* 注意：不能写 `::-webkit-scrollbar *`（伪元素后接通配符），lightningcss 会直接报错 */
+.ec-root ::-webkit-scrollbar,
+:root ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.ec-root ::-webkit-scrollbar-track,
+:root ::-webkit-scrollbar-track,
+.ec-root ::-webkit-scrollbar-corner,
+:root ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.ec-root ::-webkit-scrollbar-thumb,
+:root ::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--ec-scrollbar);
+}
+
+.ec-root ::-webkit-scrollbar-thumb:hover,
+:root ::-webkit-scrollbar-thumb:hover {
+  background: var(--ec-scrollbar-hover);
+}
+
 /* ---------- 动效（§10.6 动效：展开收起 160ms ease-out；网格高度变化 160ms） ---------- */
 .ec-panel {
   animation: ec-panel-in var(--ec-motion);

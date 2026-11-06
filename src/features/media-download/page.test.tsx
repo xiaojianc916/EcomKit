@@ -429,14 +429,27 @@ describe('MediaDownloadSettingsSection（§10.8 设置页）', () => {
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByText('模板必须包含 {id}')).toBeInTheDocument();
+    expect(screen.getByText(/模板缺少 \{id\}/)).toBeInTheDocument();
   });
 
   it('模板带 {id} 时不报错', () => {
     render(
       <MediaDownloadSettingsSection value={DEFAULT_MEDIA_DOWNLOAD_SETTINGS} onChange={vi.fn()} />,
     );
-    expect(screen.queryByText('模板必须包含 {id}')).toBeNull();
+    expect(screen.queryByText(/模板缺少 \{id\}/)).toBeNull();
+  });
+
+  it('输入框用和设置页其它分组同一套 ec-input 类（不自己画边框）', () => {
+    const { container } = render(
+      <MediaDownloadSettingsSection value={DEFAULT_MEDIA_DOWNLOAD_SETTINGS} onChange={vi.fn()} />,
+    );
+    const inputs = container.querySelectorAll('input[type="text"]');
+    expect(inputs.length).toBeGreaterThan(0);
+    for (const input of inputs) {
+      expect(input).toHaveClass('ec-input');
+      // 旧实现每个 input 自己写内联边框，和上下几组长得不一样
+      expect((input as HTMLElement).style.border).toBe('');
+    }
   });
 
   it('不再提供「按平台分文件夹」和「生成 商品信息.txt」两个选项', () => {

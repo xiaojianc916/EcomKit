@@ -15,7 +15,7 @@ import type { DirState } from '../../kernel/fs/types';
 import type { JobRecord } from '../../kernel/jobs/types';
 import { createLogger } from '../../kernel/log/logger';
 import type { ProductSnapshot } from '../../kernel/model/product';
-import { createFeatureSettings, getSettings } from '../../kernel/settings/store';
+import { createFeatureSettings, getSettings, watchSettings } from '../../kernel/settings/store';
 import { setActiveFeatureId } from './page-api';
 
 const log = createLogger('feature-slot');
@@ -89,18 +89,21 @@ function useFeatureSettings(feature: RegisteredFeature): unknown {
 export function FeatureSlot(props: FeatureSlotProps) {
   const { feature, snapshot, status, dir, job, api } = props;
   const settings = useFeatureSettings(feature);
-  // 根目录绝对路径来自全局设置（§10.5 复制完整路径）；读不到就不传，SaveBar 会退回相对路径
+  /*
+    根目录绝对路径来自全局设置（§10.5 复制完整路径）。
+    **必须订阅变化**：只在挂载时读一次的话，用户在设置里填完路径、回到商品页，
+    面板上仍然是旧值 —— 表现就是「明明填了，保存到还是显示商品文件夹名」。
+  */
   const [rootPath, setRootPath] = useState<string | undefined>(undefined);
   useEffect(() => {
-    let alive = true;
-    void getSettings()
-      .then((s) => {
-        if (alive && s.save.rootPath.trim() !== '') setRootPath(s.save.rootPath.trim());
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
+    const applyRootPath = (s: { save: { rootPath: string } }): void => {
+      const trimmed = s.save.rootPath.trim();
+      setRootPath(trimmed === '' ? undefined : trimmed);
     };
+    void getSettings()
+      .then(applyRootPath)
+      .catch(() => {});
+    return watchSettings(applyRootPath);
   }, []);
   const [loaded, setLoaded] = useState<{
     default: import('../../features/types').PageFeature;

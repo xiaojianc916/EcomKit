@@ -1,16 +1,21 @@
 import { ChevronDown } from 'lucide-react';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { usePortalTarget } from './PortalRoot';
 
 /**
  * 下拉选择（设置页 / 面板设置视图共用）。
  *
  * 为什么不用原生 <select>：它的弹出列表由操作系统绘制，CSS 完全够不到 ——
- * 在深浅色主题下是另一套配色，和面板的 --ec-* 令牌对不上（截图里那个蓝底白字的菜单）。
- * 这里用「按钮 + 自绘 listbox」实现，弹层和面板用同一套令牌，展开时的边框色也由我们定。
+ * 在深浅色主题下是另一套配色，和面板的 --ec-* 令牌对不上。
+ * 这里用「按钮 + 自绘 listbox」实现，弹层和面板用同一套令牌。
  *
- * a11y：combobox + listbox 的语义、方向键/Home/End/Enter/Esc、点外部关闭都按 WAI-ARIA
- * 的下拉列表模式实现；弹层**不做 portal**，就地绝对定位 —— 设置项只有 2~3 个选项，
- * 不存在被裁掉的问题，而 portal 进 shadow root 反而要额外处理定位和层级。
+ * **弹层必须 portal 出去**：面板的滚动区是 overflow: auto，直接在里面绝对定位
+ * 会被裁掉 —— 第三个选项就看不见了。这里挂到 portalContainer（shadow root /
+ * body），再按按钮的位置自己算坐标，并夹在视口内。
+ *
+ * a11y：combobox + listbox 语义、方向键/Home/End/Enter/Esc、点外部关闭，
+ * 按 WAI-ARIA 的下拉列表模式实现。
  */
 export interface SelectOption {
   value: string;
@@ -26,37 +31,85 @@ export interface SelectProps {
   id?: string;
 }
 
+/** 弹层与按钮的间距 */
+const OFFSET = 4;
+
+interface Placement {
+  left: number;
+  top: number;
+  width: number;
+  /** 向上展开（空间不够时翻转），动画和圆角要跟着变 */
+  flipped: boolean;
+}
+
 export function Select({ value, options, onChange, label, id }: SelectProps) {
   const [open, setOpen] = useState(false);
   /** 当前用键盘高亮的那一项；-1 表示还没用键盘移动过 */
   const [active, setActive] = useState(-1);
+  const [placement, setPlacement] = useState<Placement | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const listId = useId();
+  const portalTarget = usePortalTarget();
 
   const selectedIndex = options.findIndex((o) => o.value === value);
   const selected = selectedIndex >= 0 ? options[selectedIndex] : options[0];
+
+  /** 按按钮位置算弹层坐标；下方放不下就翻到上方 */
+  const measure = useCallback(() => {
+    const root = rootRef.current;
+    if (root === null) return;
+    const rect = root.getBoundingClientRect();
+    const estimated = options.length * 32 + 12;
+    const below = window.innerHeight - rect.bottom;
+    const flipped = below < estimated && rect.top > below;
+    setPlacement({
+      left: rect.left,
+      top: flipped ? rect.top - estimated - OFFSET : rect.bottom + OFFSET,
+      width: rect.width,
+      flipped,
+    });
+  }, [options.length]);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setActive(-1);
+  }, []);
 
   const commit = useCallback(
     (index: number) => {
       const option = options[index];
       if (option !== undefined) onChange(option.value);
-      setOpen(false);
-      setActive(-1);
+      close();
     },
-    [onChange, options],
+    [onChange, options, close],
   );
+
+  // 展开时先量一次位置，再在滚动/resize 时跟着走（面板本身可滚动）
+  useLayoutEffect(() => {
+    if (!open) return;
+    measure();
+    const onScrollOrResize = (): void => measure();
+    window.addEventListener('resize', onScrollOrResize);
+    window.addEventListener('scroll', onScrollOrResize, true);
+    return () => {
+      window.removeEventListener('resize', onScrollOrResize);
+      window.removeEventListener('scroll', onScrollOrResize, true);
+    };
+  }, [open, measure]);
 
   // 点面板外面关掉：pointerdown 比 click 早，能赶在页面自己的点击处理之前收起
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent): void => {
-      if (rootRef.current?.contains(event.target as Node) === true) return;
-      setOpen(false);
-      setActive(-1);
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) === true) return;
+      if (listRef.current?.contains(target) === true) return;
+      close();
     };
     document.addEventListener('pointerdown', onPointerDown, true);
     return () => document.removeEventListener('pointerdown', onPointerDown, true);
-  }, [open]);
+  }, [open, close]);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>): void => {
     if (event.key === 'Escape' && open) {
@@ -64,8 +117,7 @@ export function Select({ value, options, onChange, label, id }: SelectProps) {
       // preventDefault 是给调用方/测试一个「这个 Esc 已经被下拉吃掉了」的信号
       event.stopPropagation();
       event.preventDefault();
-      setOpen(false);
-      setActive(-1);
+      close();
       return;
     }
     if (!open) {
@@ -95,6 +147,42 @@ export function Select({ value, options, onChange, label, id }: SelectProps) {
     }
   };
 
+  const list =
+    open && placement !== null
+      ? createPortal(
+          <div
+            ref={listRef}
+            className="ec-select__list"
+            role="listbox"
+            id={listId}
+            aria-label={label}
+            // fixed 定位 + 按按钮的真实视口坐标：面板滚动时跟着走，也不会被 overflow 裁掉
+            style={{
+              left: placement.left,
+              top: placement.top,
+              width: placement.width,
+            }}
+          >
+            {options.map((option, index) => (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                className="ec-select__option"
+                data-active={index === active ? 'true' : undefined}
+                // 悬停/键盘高亮时把焦点留在按钮上，避免 blur 抢在 click 之前把列表收起
+                onMouseEnter={() => setActive(index)}
+                onClick={() => commit(index)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>,
+          portalTarget ?? document.body,
+        )
+      : null;
+
   return (
     <div ref={rootRef} style={{ position: 'relative' }}>
       <button
@@ -117,26 +205,7 @@ export function Select({ value, options, onChange, label, id }: SelectProps) {
         </span>
         <ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" />
       </button>
-
-      {open ? (
-        <div className="ec-select__list" role="listbox" id={listId} aria-label={label}>
-          {options.map((option, index) => (
-            <button
-              key={option.value}
-              type="button"
-              role="option"
-              aria-selected={option.value === value}
-              className="ec-select__option"
-              data-active={index === active ? 'true' : undefined}
-              // 悬停/键盘高亮时把焦点留在按钮上，避免 blur 抢在 click 之前把列表收起
-              onMouseEnter={() => setActive(index)}
-              onClick={() => commit(index)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {list}
     </div>
   );
 }
