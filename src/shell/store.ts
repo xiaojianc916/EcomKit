@@ -170,6 +170,8 @@ export interface ShellStoreState {
   form: ShellForm;
   handleY: number;
   activeFeature: string | null;
+  /** 面板里是否正在显示设置视图（点标题栏 ⚙ 原地切换，不跳新页面） */
+  view: 'assets' | 'settings';
   /** 主题设置（§10.6）：跟随系统 / 强制浅色 / 强制深色 */
   theme: ThemeMode;
   /** 视口宽度，窄视口下不自动展开；窗口 resize 时更新 */
@@ -181,6 +183,13 @@ export interface ShellStoreState {
 
 export interface ShellStoreActions {
   setForm(form: ShellForm, opts?: { persist?: boolean }): void;
+  /**
+   * 切换面板内容：素材清单 ⇄ 设置。
+   *
+   * 显式传回 'assets' 时收起面板也要带上 —— 设置视图不该被记进站点偏好，
+   * 否则用户下次进商品页点开面板，看到的第一屏是设置而不是素材。
+   */
+  setView(view: 'assets' | 'settings'): void;
   togglePanel(): void;
   setHandleY(y: number): void;
   setActiveFeature(id: string): void;
@@ -221,13 +230,16 @@ export function createShellStore(opts: CreateShellStoreOptions): ShellStore {
     form: saved.form ?? 'handle',
     handleY: clampHandleY(saved.handleY ?? HANDLE_MIN_Y, viewportHeight),
     activeFeature: saved.activeFeature ?? null,
+    view: 'assets',
     theme: opts.settings.theme,
     viewportWidth,
     viewportHeight,
     saved,
 
     setForm(form, options) {
-      set({ form });
+      // 收起面板时回到素材视图：设置是「点进去看一眼就出来」的地方，
+      // 下次打开面板不该还停在设置上（也不该把这一屏记进站点偏好）
+      set(form === 'panel' ? { form } : { form, view: 'assets' });
       if (options?.persist !== false) {
         // 只有用户主动的选择才写回站点偏好（§10.5：跟随用户在这个站点的上一次选择）
         const { activeFeature } = get();
@@ -245,6 +257,10 @@ export function createShellStore(opts: CreateShellStoreOptions): ShellStore {
     togglePanel() {
       const current = get().form;
       get().setForm(current === 'panel' ? 'handle' : 'panel');
+    },
+
+    setView(view) {
+      set({ view });
     },
 
     setHandleY(y) {

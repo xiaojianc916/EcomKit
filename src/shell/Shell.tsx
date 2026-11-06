@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useCallback, useMemo, useRef } from 'react';
 import type { StoreApi } from 'zustand';
 import { useStore } from 'zustand';
@@ -46,7 +47,8 @@ export interface ShellProps {
   features: RegisteredFeature[];
   /** 手动展开/收起时同步给外部（bg 的快捷键也走这里） */
   onFormChange?(form: 'hidden' | 'handle' | 'panel'): void;
-  onOpenOptions(): void;
+  /** 面板标题栏 ⚙ 打开的设置视图（同一块面板内切换，不跳新页面） */
+  settingsView: ReactNode;
   onCopy(text: string): void;
   onBlockerAction(action: BlockerActionId): void;
   onRescan(): void;
@@ -77,6 +79,7 @@ const selectHandleY = (s: ShellStoreState) => s.handleY;
 const selectViewportHeight = (s: ShellStoreState) => s.viewportHeight;
 const selectTheme = (s: ShellStoreState) => s.theme;
 const selectActiveFeature = (s: ShellStoreState) => s.activeFeature;
+const selectView = (s: ShellStoreState) => s.view;
 
 export function Shell(props: ShellProps) {
   const {
@@ -93,7 +96,7 @@ export function Shell(props: ShellProps) {
     dir,
     features,
     onFormChange,
-    onOpenOptions,
+    settingsView,
     onCopy,
     onBlockerAction,
     onRescan,
@@ -110,6 +113,7 @@ export function Shell(props: ShellProps) {
 
   const themeSetting = useShell(store, selectTheme);
   const activeFeature = useShell(store, selectActiveFeature);
+  const view = useShell(store, selectView);
 
   // 主题：跟随系统时不写属性，靠 tokens.css 的 prefers-color-scheme（§10.6）
   const themeValue = themeAttr(themeSetting);
@@ -143,6 +147,13 @@ export function Shell(props: ShellProps) {
     [store],
   );
   const onClose = useCallback(() => changeForm('handle'), [changeForm]);
+  // 打开设置时把手位置不动、面板不重开：只是同一块面板换了内容（§10.3）
+  const onOpenSettings = useCallback(() => {
+    store.getState().setView('settings');
+  }, [store]);
+  const onCloseSettings = useCallback(() => {
+    store.getState().setView('assets');
+  }, [store]);
 
   // Alt+Shift+E 展开/收起由 entrypoints 的快捷键负责（§10.5），
   // 这里只处理面板内的 Esc（在 Panel 里注册）。
@@ -194,7 +205,10 @@ export function Shell(props: ShellProps) {
                 activeFeature={effectiveFeature}
                 onSelectFeature={onSelectFeature}
                 onClose={onClose}
-                onOpenOptions={onOpenOptions}
+                view={view}
+                onOpenSettings={onOpenSettings}
+                onCloseSettings={onCloseSettings}
+                settingsView={settingsView}
                 onCopy={onCopy}
                 onBlockerAction={onBlockerAction}
                 {...(supportsMobileMode === undefined ? {} : { supportsMobileMode })}

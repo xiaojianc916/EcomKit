@@ -324,6 +324,61 @@
   font-size: var(--ec-fs-12);
 }
 
+/* ---------- 表单控件（设置视图；和 options 页同款外观，但只用 --ec-* 令牌） ---------- */
+.ec-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 var(--ec-pad) 12px;
+}
+
+.ec-field__label {
+  font-size: var(--ec-fs-13);
+  font-weight: var(--ec-fw-strong);
+  color: var(--ec-text);
+}
+
+.ec-field__hint {
+  font-size: var(--ec-fs-12);
+  line-height: 16px;
+  color: var(--ec-text-3);
+}
+
+.ec-field__value {
+  font-size: var(--ec-fs-13);
+  color: var(--ec-text-2);
+}
+
+.ec-preview {
+  padding: 8px 10px;
+  border: 1px solid var(--ec-line);
+  border-radius: var(--ec-radius-control);
+  background: var(--ec-bg-subtle);
+  color: var(--ec-text-2);
+  font-family: Consolas, monospace;
+  font-size: var(--ec-fs-12);
+  line-height: 16px;
+  word-break: break-all;
+}
+
+.ec-input,
+.ec-select {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--ec-line);
+  border-radius: var(--ec-radius-control);
+  background: var(--ec-bg);
+  color: var(--ec-text);
+  font-family: var(--ec-font);
+  font-size: var(--ec-fs-13);
+}
+
+.ec-input:focus-visible,
+.ec-select:focus-visible {
+  outline: 2px solid var(--ec-accent);
+  outline-offset: 1px;
+}
+
 /* 等宽数字（§10.6 字体） */
 .ec-num {
   font-variant-numeric: tabular-nums;

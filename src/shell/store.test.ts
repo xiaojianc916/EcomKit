@@ -263,6 +263,25 @@ describe('createShellStore 持久化', () => {
     expect(store.getState().form).toBe('handle');
   });
 
+  it('设置视图是会话态：默认素材视图，收起面板后回到素材视图', () => {
+    const prefs = memoryPrefs();
+    const store = createShellStore({
+      prefs,
+      siteKey,
+      settings: { autoOpen: 'panel', theme: 'system' },
+      viewportWidth: 1920,
+      viewportHeight: 900,
+    });
+    expect(store.getState().view).toBe('assets');
+    store.getState().setForm('panel');
+    store.getState().setView('settings');
+    expect(store.getState().view).toBe('settings');
+    // 收起再展开不该停在设置上，也不该把这一屏写进站点偏好
+    store.getState().setForm('handle');
+    expect(store.getState().view).toBe('assets');
+    expect(prefs.get<{ view?: string }>(siteKey)?.view).toBeUndefined();
+  });
+
   it('视口变矮时把手位置被重新夹紧', () => {
     const store = createShellStore({
       prefs: memoryPrefs(),

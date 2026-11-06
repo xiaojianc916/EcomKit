@@ -138,7 +138,10 @@ describe('Panel（§10.3 布局）', () => {
         activeFeature={null}
         onSelectFeature={vi.fn()}
         onClose={vi.fn()}
-        onOpenOptions={vi.fn()}
+        view="assets"
+        onOpenSettings={vi.fn()}
+        onCloseSettings={vi.fn()}
+        settingsView={<div>设置内容</div>}
         onCopy={vi.fn()}
         onBlockerAction={vi.fn()}
         onRescan={vi.fn()}
@@ -152,9 +155,27 @@ describe('Panel（§10.3 布局）', () => {
   it('标题栏有平台名、设置和收起按钮，不写产品名（§10.3 ①）', () => {
     renderPanel();
     expect(screen.getByText('拼多多')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '打开设置' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '收起到边缘' })).toBeInTheDocument();
     expect(screen.queryByText('电商素材工具箱')).toBeNull();
+  });
+
+  it('点 ⚙ 在面板里换成设置视图，不开新页面（§10.3）', () => {
+    const onOpenSettings = vi.fn();
+    renderPanel({ onOpenSettings });
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    expect(onOpenSettings).toHaveBeenCalled();
+  });
+
+  it('设置视图沿用同一块面板：标题栏还在，内容换成设置，并能返回素材', () => {
+    const onCloseSettings = vi.fn();
+    const { container } = renderPanel({ view: 'settings', onCloseSettings });
+    expect(container.querySelector('.ec-panel')).not.toBeNull();
+    expect(screen.getByText('设置内容')).toBeInTheDocument();
+    // 商品信息和素材插槽让位给设置
+    expect(screen.queryByText('功能内容')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '返回素材' }));
+    expect(onCloseSettings).toHaveBeenCalled();
   });
 
   it('收起到边缘按钮触发 onClose', () => {

@@ -39,6 +39,7 @@ import { getPlatformResolver } from '../../platforms/registry.resolver';
 import type { DraftAccumulator } from '../../platforms/shared/merge';
 import type { CapturedPayload, PlatformManifest } from '../../platforms/types';
 import type { ShellProps } from '../../shell/Shell';
+import { PanelSettingsView } from '../../shell/settings/PanelSettingsView';
 import type { PrefsPort } from '../../shell/store';
 import {
   createShellStore,
@@ -640,9 +641,9 @@ export function createPageController(ctx: ContentScriptContext): PageController 
           const key = siteKeyOf(location.hostname);
           uiPrefs = { ...uiPrefs, [key]: form };
         },
-        onOpenOptions() {
-          void sendMessage('shell.openOptions');
-        },
+        // 面板标题栏的 ⚙ 不再开新页面：设置是面板里的第二屏（view='settings'），
+        // 入口只负责把这一屏的内容装配进来，外壳不认识任何具体设置项。
+        settingsView: createElement(PanelSettingsView),
         onCopy(text) {
           void navigator.clipboard.writeText(text).catch(() => {});
         },
@@ -651,7 +652,8 @@ export function createPageController(ctx: ContentScriptContext): PageController 
           else if (action === 'grant') void sendMessage('fs.openGrant', { reason: 'unset' });
           else if (action === 'reset-grant') void sendMessage('fs.openGrant', { reason: 'gone' });
           else if (action === 'retry') void evaluate();
-          else if (action === 'settings') void sendMessage('shell.openOptions');
+          // 阻断提示里的「设置」同样落到面板内的设置视图，不再开新页面
+          else if (action === 'settings') ensureStore().getState().setView('settings');
           else if (action === 'mobile-mode') {
             // Phase 0 已证否：两个平台改 UA 都拿不到数据（docs/phase0/FINDINGS.md §1），
             // 所以这里不假装能切，只给一句话说明。

@@ -1,4 +1,4 @@
-import { ChevronRight, Settings } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Settings } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
 import type { RegisteredFeature } from '../features/types';
@@ -37,7 +37,15 @@ export interface PanelViewProps {
   activeFeature: string | null;
   onSelectFeature(id: string): void;
   onClose(): void;
-  onOpenOptions(): void;
+  /**
+   * 面板里正在显示哪一屏。设置**不是**另一个页面：点标题栏 ⚙ 就在这块面板里切过去，
+   * 标题栏、宽高、圆角、令牌全部沿用同一套（§10.3）。
+   */
+  view: 'assets' | 'settings';
+  onOpenSettings(): void;
+  onCloseSettings(): void;
+  /** 设置视图的内容（由入口装配，外壳不认识任何具体设置项） */
+  settingsView: ReactNode;
   onCopy(text: string): void;
   onBlockerAction(action: BlockerActionId): void;
   supportsMobileMode?: boolean;
@@ -63,7 +71,10 @@ export function Panel({
   activeFeature,
   onSelectFeature,
   onClose,
-  onOpenOptions,
+  view,
+  onOpenSettings,
+  onCloseSettings,
+  settingsView,
   onCopy,
   onBlockerAction,
   supportsMobileMode,
@@ -90,16 +101,18 @@ export function Panel({
     if (autoFocus) rootRef.current?.focus();
   }, [autoFocus]);
 
+  // 设置视图不依赖商品数据：识别失败 / 阻断时也要能进去改设置（保存方式选错了正是原因之一）
+  const settingsVisible = view === 'settings';
   const showContent = snapshot !== null && blocker === null;
-  // 阻断时 ② 之外的部分全部隐藏（§10.4「阻断和异常」）
-  const showBody = showContent;
+  // 阻断时 ② 之外的部分全部隐藏（§10.4「阻断和异常」）；设置视图下什么都不占位
+  const showBody = showContent && !settingsVisible;
 
   return (
     <div
       ref={rootRef}
       className="ec-panel ec-root"
       role="dialog"
-      aria-label="素材下载面板"
+      aria-label={settingsVisible ? '素材下载设置' : '素材下载面板'}
       tabIndex={-1}
       style={{
         position: 'fixed',
@@ -151,16 +164,29 @@ export function Panel({
           {platformName}
         </span>
         <span style={{ flex: 1 }} />
-        <Tooltip content="打开设置">
-          <button
-            type="button"
-            className="ec-icon-btn"
-            aria-label="打开设置"
-            onClick={onOpenOptions}
-          >
-            <Settings size={16} strokeWidth={1.75} aria-hidden="true" />
-          </button>
-        </Tooltip>
+        {settingsVisible ? (
+          <Tooltip content="返回素材">
+            <button
+              type="button"
+              className="ec-icon-btn"
+              aria-label="返回素材"
+              onClick={onCloseSettings}
+            >
+              <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
+            </button>
+          </Tooltip>
+        ) : (
+          <Tooltip content="设置">
+            <button
+              type="button"
+              className="ec-icon-btn"
+              aria-label="设置"
+              onClick={onOpenSettings}
+            >
+              <Settings size={16} strokeWidth={1.75} aria-hidden="true" />
+            </button>
+          </Tooltip>
+        )}
         <Tooltip content="收起到边缘 · Alt+Shift+E">
           <button type="button" className="ec-icon-btn" aria-label="收起到边缘" onClick={onClose}>
             <ChevronRight size={16} strokeWidth={1.75} aria-hidden="true" />
@@ -172,7 +198,9 @@ export function Panel({
       <div
         style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}
       >
-        {blocker !== null ? (
+        {settingsVisible ? (
+          settingsView
+        ) : blocker !== null ? (
           <BlockerNotice
             code={blocker}
             onAction={(action) => {
