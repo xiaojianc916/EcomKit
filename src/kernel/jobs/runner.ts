@@ -205,6 +205,24 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     for (const resolve of list) resolve();
   }
 
+  /**
+   * 等队列彻底空闲：一次只挂一个等待者，醒过来再重查一次。
+   *
+   * **必须串行等待**，不能并发：这不是「一批互不依赖的活儿」，而是一个等待者队列。
+   * notifyIdle() 只在真的空下来时才唤醒，但「被唤醒」到「继续执行」之间还夹着一个微任务，
+   * 这期间 enqueue 完全可能新塞进一个任务（例如页面连点两次下载）—— 所以不能等一次就返回，
+   * 必须醒来重查，没空就再挂一轮。
+   *
+   * 用递归表达「等一轮 → 重查」而不是 while：两者语义完全一样（尾递归不攒调用栈），
+   * 但写法上明确表达了「每轮都是一次独立的等待」，不会让人误以为这里面是能并发的批量工作。
+   */
+  function waitIdle(): Promise<void> {
+    if (isIdle()) return Promise.resolve();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    idleWaiters.push(resolve);
+    return promise.then(waitIdle);
+  }
+
   function clampConcurrency(n: number): number {
     if (!Number.isFinite(n)) return DEFAULT_CONCURRENCY;
     return Math.min(8, Math.max(1, Math.round(n)));
@@ -736,15 +754,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
      *
      * 旧实现是 setTimeout(..., 5) 死循环轮询：一个 200 项的任务要空转几百次定时器，
      * 既拖慢单测，又让「到底跑完没有」永远有一拍延迟。现在改成等待者队列：
-     * 任务从 running 移除、或 finalize 结束时由 notifyIdle() 唤醒一次，零空转。
+     * 任务从 running 移除、或 finalize 结束时由 notifyIdle() 唤醒一次，零空转（见 waitIdle）。
      */
-    async idle(): Promise<void> {
-      while (!isIdle()) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        idleWaiters.push(resolve);
-        await promise;
-      }
-    },
+    idle: waitIdle,
   };
 
   return runner;

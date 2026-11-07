@@ -5,6 +5,7 @@ import type { Logger } from '../../log/logger';
 import { sendMessage } from '../../messaging/runtime';
 import { NAME_LIMITS, sanitizeName } from '../../naming/sanitize';
 import { uniqueFileName } from '../../naming/unique';
+import { httpStatusToCode } from '../../net/retry';
 import { alwaysReadyProbe, checkDirStatus } from '../dir-status';
 import { mapFsError } from '../fs-errors';
 import { blobToText, streamToBlob, throwIfAborted } from '../stream-utils';
@@ -147,6 +148,17 @@ function createBridgeDownloadsApi(): DownloadsApi {
         throw new EcError('INTERNAL', { reason: 'offscreen-fetch-unavailable' });
       }
       const response = await fetch(url);
+      /**
+       * fetch 只在网络层失败时 reject，4xx/5xx 一样是 resolve ——
+       * 不检查就直接读 body，错误页的字节会被当成素材落盘（用户拿到一张写着 404 的 jpg）。
+       * 错误码沿用 net 层同一套映射，UI 文案按码查表。
+       */
+      if (!response.ok) {
+        throw new EcError(httpStatusToCode(response.status), {
+          reason: 'offscreen-fetch-status',
+          status: response.status,
+        });
+      }
       const blob = await response.blob();
       const buffer = await blob.arrayBuffer();
       const bridged = (await sendMessage('engine.download', {

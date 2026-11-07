@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { StoreApi } from 'zustand';
 import { useStore } from 'zustand';
 import type { RegisteredFeature } from '../features/types';
@@ -15,6 +15,7 @@ import { Handle } from './Handle';
 import { LiveRegionProvider } from './LiveRegion';
 import { Panel } from './Panel';
 import { createShellStore, handleBadge, handleBadgeEq, type ShellStore, themeAttr } from './store';
+import { useStableByValue } from './useStableByValue';
 
 /**
  * 工具箱外壳（§10.2 三种形态、§10.9 组件树）。
@@ -83,6 +84,100 @@ const selectTheme = (s: ShellStoreState) => s.theme;
 const selectActiveFeature = (s: ShellStoreState) => s.activeFeature;
 const selectView = (s: ShellStoreState) => s.view;
 
+/**
+ * 外壳订阅的 store 切片 + 由它们派生的值。
+ *
+ * 单独抽成 hook：这些订阅彼此独立，混在 Shell 的 JSX 里既看不出「外壳到底关心哪几片状态」，
+ * 也会把渲染函数的复杂度堆到阈值以上。hook 顺序和订阅顺序与拆分前完全一致。
+ */
+function useShellSlices(store: ShellStore, features: RegisteredFeature[]) {
+  const form = useShell(store, selectForm);
+  const handleY = useShell(store, selectHandleY);
+  const viewportHeight = useShell(store, selectViewportHeight);
+  const themeSetting = useShell(store, selectTheme);
+  const activeFeature = useShell(store, selectActiveFeature);
+  const view = useShell(store, selectView);
+
+  const effectiveFeature = useMemo(
+    () => pickActiveFeature(features, activeFeature),
+    [features, activeFeature],
+  );
+
+  return { form, handleY, viewportHeight, themeSetting, view, effectiveFeature };
+}
+
+/**
+ * 外壳要往下传的回调。
+ *
+ * 这些回调一旦每次渲染都新建，memo 过的子组件（Handle / Panel 及其子树）就白 memo 了，
+ * 而进度每 200ms 就会让外壳重渲染一次。
+ */
+function useShellActions(store: ShellStore, onFormChange: ShellProps['onFormChange']) {
+  const setForm = store.getState().setForm;
+  const changeForm = useCallback(
+    (next: 'hidden' | 'handle' | 'panel') => {
+      setForm(next);
+      onFormChange?.(next);
+    },
+    [setForm, onFormChange],
+  );
+
+  const onDragEnd = useCallback(
+    (y: number) => {
+      store.getState().setHandleY(y);
+    },
+    [store],
+  );
+  const onHandleClick = useCallback(() => changeForm('panel'), [changeForm]);
+  const onSelectFeature = useCallback(
+    (id: string) => {
+      store.getState().setActiveFeature(id);
+    },
+    [store],
+  );
+  const onClose = useCallback(() => changeForm('handle'), [changeForm]);
+  // 打开设置时把手位置不动、面板不重开：只是同一块面板换了内容（§10.3）
+  const onOpenSettings = useCallback(() => {
+    store.getState().setView('settings');
+  }, [store]);
+  const onCloseSettings = useCallback(() => {
+    store.getState().setView('assets');
+  }, [store]);
+
+  return {
+    onDragEnd,
+    onHandleClick,
+    onSelectFeature,
+    onClose,
+    onOpenSettings,
+    onCloseSettings,
+  };
+}
+
+/**
+ * 「有值才带上这个可选 prop」的展开助手。
+ *
+ * exactOptionalPropertyTypes 下不能把 undefined 显式传给可选属性，于是到处写成
+ * `{...(x === undefined ? {} : { x })}`。这种样板分支会把渲染函数的复杂度指标全吃掉，
+ * 和「这个组件到底有几个真实分支」完全无关，所以收进这里。
+ */
+function optionalProp<K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } {
+  if (value === undefined) return {};
+  return { [key]: value } as { [P in K]?: V };
+}
+
+/** 识别状态 → 角标状态（角标只区分三种：识别中 / 就绪 / 阻断） */
+function badgeStatusOf(status: ShellProps['status']): 'resolving' | 'ready' | 'blocked' {
+  if (status === 'blocked') return 'blocked';
+  if (status === 'ready') return 'ready';
+  return 'resolving';
+}
+
+/** 主题强制时给根节点一个 color-scheme（跟随系统时不写，交给 tokens.css 的媒体查询） */
+function rootStyleOf(themeValue: 'light' | 'dark' | undefined) {
+  return themeValue === undefined ? undefined : ({ colorScheme: themeValue } as const);
+}
+
 export function Shell(props: ShellProps) {
   const {
     store,
@@ -110,103 +205,64 @@ export function Shell(props: ShellProps) {
     now,
   } = props;
 
-  const form = useShell(store, selectForm);
-  const handleY = useShell(store, selectHandleY);
-  const viewportHeight = useShell(store, selectViewportHeight);
-
-  const themeSetting = useShell(store, selectTheme);
-  const activeFeature = useShell(store, selectActiveFeature);
-  const view = useShell(store, selectView);
+  const { form, handleY, viewportHeight, themeSetting, view, effectiveFeature } = useShellSlices(
+    store,
+    features,
+  );
+  const { onDragEnd, onHandleClick, onSelectFeature, onClose, onOpenSettings, onCloseSettings } =
+    useShellActions(store, onFormChange);
 
   // 主题：跟随系统时不写属性，靠 tokens.css 的 prefers-color-scheme（§10.6）
   const themeValue = themeAttr(themeSetting);
 
-  const effectiveFeature = useMemo(
-    () => pickActiveFeature(features, activeFeature),
-    [features, activeFeature],
-  );
-
-  const setForm = store.getState().setForm;
-  const changeForm = useCallback(
-    (next: 'hidden' | 'handle' | 'panel') => {
-      setForm(next);
-      onFormChange?.(next);
-    },
-    [setForm, onFormChange],
-  );
-
-  // 这些回调一旦每次渲染都新建，下面 memo 过的子组件就白 memo 了
-  const onDragEnd = useCallback(
-    (y: number) => {
-      store.getState().setHandleY(y);
-    },
-    [store],
-  );
-  const onHandleClick = useCallback(() => changeForm('panel'), [changeForm]);
-  const onSelectFeature = useCallback(
-    (id: string) => {
-      store.getState().setActiveFeature(id);
-    },
-    [store],
-  );
-  const onClose = useCallback(() => changeForm('handle'), [changeForm]);
-  // 打开设置时把手位置不动、面板不重开：只是同一块面板换了内容（§10.3）
-  const onOpenSettings = useCallback(() => {
-    store.getState().setView('settings');
-  }, [store]);
-  const onCloseSettings = useCallback(() => {
-    store.getState().setView('assets');
-  }, [store]);
-
   // Alt+Shift+E 展开/收起由 entrypoints 的快捷键负责（§10.5），
   // 这里只处理面板内的 Esc（在 Panel 里注册）。
 
-  const rootStyle = themeValue === undefined ? undefined : ({ colorScheme: themeValue } as const);
+  // 两种形态的内容分别打包成组件：外壳只决定「显示哪一个」，不再堆一整排 props
+  const handleView = (
+    /*
+      角标单独成组件：now 每 250ms 变一次，而它**只**被角标用。
+      留在 Shell 里算的话，那个 3 秒的完成态窗口每 250ms 都会让整个外壳
+      （含 Panel 与功能面板）重渲染一次。拆出去之后，now 的变化只重渲染这一小块。
+    */
+    <HandleBadgeView
+      status={status}
+      totalAssets={totalAssets}
+      job={job}
+      now={now}
+      needsAttention={needsAttention}
+      handleY={handleY}
+      viewportHeight={viewportHeight}
+      {...optionalProp('platformColor', platformColor)}
+      {...optionalProp('platformRing', platformRing)}
+      onDragEnd={onDragEnd}
+      onClick={onHandleClick}
+    />
+  );
 
   return (
     // PortalRoot 必须在外层：内层再包一层 value=undefined 会把 shadow root 覆盖成 null，
     // 于是 Tooltip / Toast 全部挂到 document.body，拿不到 Shadow DOM 里的样式。
-    <PortalRoot {...(portalContainer === undefined ? {} : { value: portalContainer })}>
+    <PortalRoot {...optionalProp('value', portalContainer)}>
       <TooltipProvider>
         <LiveRegionProvider>
           <div
             className="ec-root"
-            {...(themeValue === undefined ? {} : { 'data-ec-theme': themeValue })}
-            style={rootStyle}
+            {...optionalProp('data-ec-theme', themeValue)}
+            style={rootStyleOf(themeValue)}
           >
-            {form === 'handle' ? (
-              /*
-                角标单独成组件：now 每 250ms 变一次，而它**只**被角标用。
-                留在 Shell 里算的话，那个 3 秒的完成态窗口每 250ms 都会让整个外壳
-                （含 Panel 与功能面板）重渲染一次。拆出去之后，now 的变化只重渲染这一小块。
-              */
-              <HandleBadgeView
-                status={status}
-                total={totalAssets}
-                job={job}
-                now={now}
-                needsAttention={needsAttention}
-                handleY={handleY}
-                viewportHeight={viewportHeight}
-                {...(platformColor === undefined ? {} : { platformColor })}
-                {...(platformRing === undefined ? {} : { platformRing })}
-                onDragEnd={onDragEnd}
-                onClick={onHandleClick}
-              />
-            ) : null}
-
             {form === 'panel' ? (
-              <Panel
+              <ShellPanelView
                 platformName={platformName}
-                {...(platformId === undefined ? {} : { platformId })}
-                {...(platformColor === undefined ? {} : { platformColor })}
-                {...(platformRing === undefined ? {} : { platformRing })}
+                {...optionalProp('platformId', platformId)}
+                {...optionalProp('platformColor', platformColor)}
+                {...optionalProp('platformRing', platformRing)}
                 snapshot={snapshot}
                 blocker={blocker}
                 completeness={completeness}
-                top={handleY}
+                handleY={handleY}
                 features={features}
-                activeFeature={effectiveFeature}
+                effectiveFeature={effectiveFeature}
                 onSelectFeature={onSelectFeature}
                 onClose={onClose}
                 view={view}
@@ -215,12 +271,14 @@ export function Shell(props: ShellProps) {
                 settingsView={settingsView}
                 onCopy={onCopy}
                 onBlockerAction={onBlockerAction}
-                {...(supportsMobileMode === undefined ? {} : { supportsMobileMode })}
+                {...optionalProp('supportsMobileMode', supportsMobileMode)}
                 onRescan={onRescan}
-                autoFocus
-              >
-                {effectiveFeature === null ? null : renderFeature(effectiveFeature, { dir, job })}
-              </Panel>
+                dir={dir}
+                job={job}
+                renderFeature={renderFeature}
+              />
+            ) : form === 'handle' ? (
+              handleView
             ) : null}
 
             {/*
@@ -236,9 +294,67 @@ export function Shell(props: ShellProps) {
   );
 }
 
+interface ShellPanelViewProps {
+  platformName: string;
+  platformId?: string;
+  platformColor?: string;
+  platformRing?: string;
+  snapshot: ProductSnapshot | null;
+  blocker: ErrorCode | null;
+  completeness: 'full' | 'partial';
+  handleY: number;
+  features: RegisteredFeature[];
+  effectiveFeature: string | null;
+  onSelectFeature(id: string): void;
+  onClose(): void;
+  view: 'assets' | 'settings';
+  onOpenSettings(): void;
+  onCloseSettings(): void;
+  settingsView: ReactNode;
+  onCopy(text: string): void;
+  onBlockerAction(action: BlockerActionId): void;
+  supportsMobileMode?: boolean;
+  onRescan(): void;
+  dir: DirState;
+  job: JobRecord | null;
+  renderFeature(id: string, context: { dir: DirState; job: JobRecord | null }): ReactNode;
+}
+
+/** 「展开面板」形态 */
+function ShellPanelView(props: ShellPanelViewProps) {
+  const { effectiveFeature, dir, job, renderFeature } = props;
+  return (
+    <Panel
+      platformName={props.platformName}
+      {...optionalProp('platformId', props.platformId)}
+      {...optionalProp('platformColor', props.platformColor)}
+      {...optionalProp('platformRing', props.platformRing)}
+      snapshot={props.snapshot}
+      blocker={props.blocker}
+      completeness={props.completeness}
+      top={props.handleY}
+      features={props.features}
+      activeFeature={effectiveFeature}
+      onSelectFeature={props.onSelectFeature}
+      onClose={props.onClose}
+      view={props.view}
+      onOpenSettings={props.onOpenSettings}
+      onCloseSettings={props.onCloseSettings}
+      settingsView={props.settingsView}
+      onCopy={props.onCopy}
+      onBlockerAction={props.onBlockerAction}
+      {...optionalProp('supportsMobileMode', props.supportsMobileMode)}
+      onRescan={props.onRescan}
+      autoFocus
+    >
+      {effectiveFeature === null ? null : renderFeature(effectiveFeature, { dir, job })}
+    </Panel>
+  );
+}
+
 interface HandleBadgeViewProps {
   status: ShellProps['status'];
-  total: number;
+  totalAssets: number;
   job: JobRecord | null;
   now: number;
   needsAttention: boolean;
@@ -258,30 +374,18 @@ interface HandleBadgeViewProps {
  * Handle 也就不用重渲染（从而不会打断正在进行的拖动 = pointermove 掉帧）。
  */
 function HandleBadgeView(props: HandleBadgeViewProps) {
-  const {
-    status,
-    total,
-    job,
-    now,
-    needsAttention,
-    handleY,
-    viewportHeight,
-    platformColor,
-    platformRing,
-    onDragEnd,
-    onClick,
-  } = props;
+  const { status, totalAssets, job, now, needsAttention, handleY, viewportHeight } = props;
 
   const badge = useMemo(
     () =>
       handleBadge({
-        status: status === 'blocked' ? 'blocked' : status === 'ready' ? 'ready' : 'resolving',
-        total,
+        status: badgeStatusOf(status),
+        total: totalAssets,
         job,
         now,
         needsAttention,
       }),
-    [status, total, job, now, needsAttention],
+    [status, totalAssets, job, now, needsAttention],
   );
   const stableBadge = useStableByValue(badge, handleBadgeEq);
 
@@ -289,26 +393,13 @@ function HandleBadgeView(props: HandleBadgeViewProps) {
     <Handle
       y={handleY}
       badge={stableBadge}
-      {...(platformColor === undefined ? {} : { platformColor })}
-      {...(platformRing === undefined ? {} : { platformRing })}
+      {...optionalProp('platformColor', props.platformColor)}
+      {...optionalProp('platformRing', props.platformRing)}
       viewportHeight={viewportHeight}
-      onDragEnd={onDragEnd}
-      onClick={onClick}
+      onDragEnd={props.onDragEnd}
+      onClick={props.onClick}
     />
   );
-}
-
-/**
- * 值相等时复用上一次的引用。
- *
- * 典型用法：每次渲染都算出 { kind: 'progress', percent: 42 } 这种小对象，
- * 但内容没变时下游组件不该重渲染。useMemo 只能按依赖数组缓存，
- * 按「算出来之后再比一次」的场景需要这个（React 官方文档里 useMemo 一节的同款写法）。
- */
-function useStableByValue<T>(value: T, eq: (a: T, b: T) => boolean): T {
-  const ref = useRef(value);
-  if (!eq(ref.current, value)) ref.current = value;
-  return ref.current;
 }
 
 /**

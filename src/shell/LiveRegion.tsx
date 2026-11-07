@@ -1,5 +1,13 @@
 import type { ReactNode } from 'react';
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 /**
  * 读屏器播报（§10.9 组件树最后一项：LiveRegion，aria-live=polite）。
@@ -30,8 +38,11 @@ export function LiveRegionProvider({ children }: { children: ReactNode }) {
     setNonce((n) => n + 1);
   }, []);
 
+  // 每次渲染都新建 { announce } 会让所有消费者跟着重渲染；依赖只有 announce，它本身是稳定的
+  const contextValue = useMemo(() => ({ announce }), [announce]);
+
   return (
-    <LiveRegionContext.Provider value={{ announce }}>
+    <LiveRegionContext.Provider value={contextValue}>
       {children}
       {/* polite：不打断用户正在听的内容（§10.9） */}
       <div className="ec-visually-hidden" role="status" aria-live="polite" aria-atomic="true">

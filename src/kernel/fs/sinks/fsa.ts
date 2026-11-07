@@ -1,4 +1,5 @@
 import { EcError } from '../../errors/ec-error';
+import { createConcurrencyPool } from '../../jobs/concurrency-pool';
 import type { Logger } from '../../log/logger';
 import { NAME_LIMITS, nameKey, sanitizeName } from '../../naming/sanitize';
 import { uniqueFileName } from '../../naming/unique';
@@ -19,6 +20,8 @@ import type { DirEntry, DirState, FsSink, RelPath, WriteResult } from '../types'
  */
 
 const SWAP_EXT = '.crswap';
+/** 清理残留临时文件时的并发上限（每个文件一次独立的 removeEntry） */
+const SWAP_CLEAN_CONCURRENCY = 4;
 
 /**
  * 目录名字列表的缓存时长。
@@ -330,16 +333,27 @@ export async function listSwapFiles(sink: FsSink, dir: RelPath): Promise<string[
     .map((e) => e.name);
 }
 
-/** 清理残留临时文件（§9.6）。失败不影响主流程，只记日志 */
+/**
+ * 清理残留临时文件（§9.6）。失败不影响主流程，只记日志。
+ *
+ * 每个 removeFile 互不依赖（不同的文件名、失败只记日志），用有界并发删：
+ * 一次写入中断可能留下几十个 .crswap，逐个等会让「开始下载」多等好几轮往返。
+ * 并发上限压得很小 —— 这只是收尾清理，不值得去抢下载任务的文件句柄。
+ */
 export async function cleanSwapFiles(sink: FsSink, dir: RelPath, log?: Logger): Promise<void> {
   const names = await listSwapFiles(sink, dir);
+  if (names.length === 0) return;
+  const pool = createConcurrencyPool(SWAP_CLEAN_CONCURRENCY);
   for (const name of names) {
-    try {
-      await sink.removeFile(dir, name);
-    } catch {
-      log?.debug('清理临时文件失败', { name });
-    }
+    void pool.add(async () => {
+      try {
+        await sink.removeFile(dir, name);
+      } catch {
+        log?.debug('清理临时文件失败', { name });
+      }
+    });
   }
+  await pool.onIdle();
 }
 
 export { asFsaDir, asFsaHandle, requireRootHandle };

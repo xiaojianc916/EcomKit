@@ -1,4 +1,12 @@
-import { type ComponentType, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ComponentType,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
   MediaDownloadSettings,
@@ -70,12 +78,24 @@ export interface SettingsDraft {
  */
 export function useSettingsDraft(): SettingsDraft {
   const [settings, setLocal] = useState<GlobalSettings | null>(null);
+  /**
+   * 「当前设置值」的镜像。
+   *
+   * update 里要**同步**算出下一份设置：界面立刻更新，防抖落盘也排上队。
+   * 如果放到 setLocal 的 updater 里算，updater 就不纯了 —— React 19 严格模式下
+   * updater 会被调用两次，写 ref、起定时器都会重复执行。所以这里用 ref 镜像当前值，
+   * updater 只返回新状态。
+   */
+  const currentRef = useRef<GlobalSettings | null>(null);
   /** 最新一次待写入的设置（防抖窗口内以它为准，避免用旧闭包覆盖新值） */
   const pendingSave = useRef<GlobalSettings | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    void getSettings().then(setLocal);
+    void getSettings().then((value) => {
+      currentRef.current = value;
+      setLocal(value);
+    });
   }, []);
 
   // 卸载前把最后一次改动落盘，用户改完立刻切走也不会丢
@@ -89,19 +109,21 @@ export function useSettingsDraft(): SettingsDraft {
   }, []);
 
   const update = useCallback((patch: Partial<GlobalSettings>) => {
-    setLocal((current) => {
-      if (!current) return current;
-      const next = { ...current, ...patch };
-      pendingSave.current = next;
-      if (saveTimer.current !== null) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        saveTimer.current = null;
-        const value = pendingSave.current;
-        pendingSave.current = null;
-        if (value !== null) void setSettings(value).catch(() => {});
-      }, SAVE_DEBOUNCE_MS);
-      return next;
-    });
+    const current = currentRef.current;
+    // 设置还没读回来时忽略输入（这时表单本身也没渲染）
+    if (current === null) return;
+    const next = { ...current, ...patch };
+    currentRef.current = next;
+    pendingSave.current = next;
+    // 防抖：窗口内以最后一次改动为准（每次都重置计时并覆盖待写入值）
+    if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      const value = pendingSave.current;
+      pendingSave.current = null;
+      if (value !== null) void setSettings(value).catch(() => {});
+    }, SAVE_DEBOUNCE_MS);
+    setLocal(next);
   }, []);
 
   return { settings, update };
@@ -141,6 +163,7 @@ function SaveSection({
   settings: GlobalSettings;
   update: SettingsDraft['update'];
 }) {
+  const rootPathId = useId();
   return (
     <>
       <div className="ec-field">
@@ -159,8 +182,12 @@ function SaveSection({
       </div>
 
       <div className="ec-field">
-        <span className="ec-field__label">根目录绝对路径（可选）</span>
+        {/* 用 <label htmlFor> 而不是旁边的 span：读屏器靠它拿到字段名，placeholder 不算名字 */}
+        <label className="ec-field__label" htmlFor={rootPathId}>
+          根目录绝对路径（可选）
+        </label>
         <input
+          id={rootPathId}
           className="ec-input"
           placeholder="D:\电商素材"
           value={settings.save.rootPath}
@@ -179,6 +206,7 @@ function NamingSection() {
   // 这里是**同一个**模板的读写入口（旧实现是写死的本地 state，用户在设置页改模板
   // 既不落盘也不影响下载，等于一个假的设置项）。
   const [template, setTemplate] = useState('');
+  const templateId = useId();
   const valid = useMemo(() => templateHasId(template), [template]);
   const preview = useMemo(() => renderPreview(template), [template]);
 
@@ -215,8 +243,15 @@ function NamingSection() {
   return (
     <>
       <div className="ec-field">
-        <span className="ec-field__label">商品文件夹模板</span>
-        <input className="ec-input" value={template} onChange={(e) => onChange(e.target.value)} />
+        <label className="ec-field__label" htmlFor={templateId}>
+          商品文件夹模板
+        </label>
+        <input
+          id={templateId}
+          className="ec-input"
+          value={template}
+          onChange={(e) => onChange(e.target.value)}
+        />
         {valid ? null : (
           <span style={{ fontSize: 12, color: 'var(--ec-danger)' }}>
             模板缺少 {'{id}'}，无法按商品 ID 定位文件夹
@@ -361,11 +396,15 @@ function AdvancedSection({
   settings: GlobalSettings;
   update: SettingsDraft['update'];
 }) {
+  const concurrencyId = useId();
   return (
     <>
       <div className="ec-field">
-        <span className="ec-field__label">并发数</span>
+        <label className="ec-field__label" htmlFor={concurrencyId}>
+          并发数
+        </label>
         <input
+          id={concurrencyId}
           className="ec-input"
           type="number"
           min={1}
@@ -437,6 +476,21 @@ function AboutSection() {
 }
 
 /**
+ * 按「字素」切分字符串（模板里的 {title:N} 表示取前 N 个字，中文按字算不按 UTF-16 码元算）。
+ *
+ * 放在模块作用域：new Intl.Segmenter() 每次构造都要装载一遍 locale 数据，
+ * 而预览每敲一个字就会重算一次。
+ */
+const graphemeSegmenter = new Intl.Segmenter();
+
+/** 取前 n 个字（按字素，不会把 emoji 或组合字符切一半） */
+function takeGraphemes(text: string, n: number): string {
+  return Array.from(graphemeSegmenter.segment(text), (s) => s.segment)
+    .slice(0, n)
+    .join('');
+}
+
+/**
  * 模板预览用示例商品（§10.8：模板下面用示例商品实时预览完整路径）。
  *
  * 根目录下直接就是商品文件夹，外面**没有平台层** —— 默认模板
@@ -453,11 +507,7 @@ function renderPreview(template: string): string {
   };
   const folder = template.replace(/\{(\w+)(?::(\d+))?\}/g, (_m, key: string, len?: string) => {
     const v = sample[key] ?? `{${key}}`;
-    return len
-      ? Array.from(new Intl.Segmenter().segment(v), (s) => s.segment)
-          .slice(0, Number(len))
-          .join('')
-      : v;
+    return len ? takeGraphemes(v, Number(len)) : v;
   });
   return `电商素材 ･ ${folder}`;
 }

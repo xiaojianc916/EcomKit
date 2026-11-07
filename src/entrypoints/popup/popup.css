@@ -73,6 +73,9 @@ body {
   color: var(--fg-3);
   margin: 0;
 }
+/* 一行 = <label>（复选框 + 名称 + 数量） + 行内「下载」按钮。
+   label 只标一个控件，所以「下载」在 label 外面；label 用 flex:1 撑满，
+   点击名称/数量/右侧空白仍然切换勾选，手感和原来一致。 */
 .pp__row {
   display: flex;
   align-items: center;
@@ -83,6 +86,14 @@ body {
 }
 .pp__row:hover {
   background: var(--bg-2);
+}
+.pp__row-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  min-width: 0;
 }
 .pp__row-name {
   flex: 1;

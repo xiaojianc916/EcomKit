@@ -188,34 +188,48 @@ export async function downloadHls(
   if (segments.length === 0) throw new EcError('UNSUPPORTED_STREAM', { reason: 'no-segments' });
 
   let bytes = 0;
-  for (let i = 0; i < segments.length; i += 1) {
-    if (options.signal.aborted) throw new EcError('CANCELED');
-    const segmentUrl = segments[i];
-    if (!segmentUrl) continue;
-    const stream = await options.fetchSegment(segmentUrl);
-    /**
-     * 用官方 pipeTo + WritableStream 代替手写 reader 泵：取消信号直接传给 pipeTo，
-     * 用户中途取消时分片流会被正确 abort（旧实现在 while(read) 里只检查了段边界，
-     * 一个几十 MB 的分片要等整个读完才发现被取消）。
-     */
-    try {
-      await stream.pipeTo(
-        new WritableStream<Uint8Array>({
-          write: async (value) => {
-            bytes += value.byteLength;
-            // 按顺序追加写入同一个文件（§9.9）
-            await options.write(value);
-          },
-        }),
-        { signal: options.signal },
-      );
-    } catch (e) {
-      // pipeTo 被取消时抛的是 DOMException AbortError；统一成 EcError，调用方只认错误码
+  /**
+   * 顺序执行器：把 items 逐个接在一条 promise 链上，**上一个跑完才启动下一个**。
+   *
+   * 这里要表达的正是「分片必须严格串行」这件事：
+   *   · 所有分片写的是**同一个文件**，先写后写决定字节顺序，并发写入会拼出坏文件（§9.9）；
+   *   · onSegment(i + 1, total) 是「已经写完第几个」，本身就是累积状态；
+   *   · 取消必须在**段边界**生效，并发发请求就没法只停在边界上。
+   * 所以不能用 Promise.all / 有界并发，只能串行 —— 用链式 then 把「串行」写成结构本身，
+   * 而不是靠一个循环里 await 来表达。
+   */
+  let chain: Promise<void> = Promise.resolve();
+  for (const [index, segmentUrl] of segments.entries()) {
+    chain = chain.then(async () => {
+      // 段边界检查取消：上一段已经整段写完，这里停不会留下半个分片
       if (options.signal.aborted) throw new EcError('CANCELED');
-      throw e;
-    }
-    options.onSegment?.(i + 1, segments.length);
+      if (!segmentUrl) return;
+      /**
+       * 用官方 pipeTo + WritableStream 代替手写 reader 泵：取消信号直接传给 pipeTo，
+       * 用户中途取消时分片流会被正确 abort（旧实现在 while(read) 里只检查了段边界，
+       * 一个几十 MB 的分片要等整个读完才发现被取消）。
+       */
+      try {
+        const stream = await options.fetchSegment(segmentUrl);
+        await stream.pipeTo(
+          new WritableStream<Uint8Array>({
+            write: async (value) => {
+              bytes += value.byteLength;
+              // 按顺序追加写入同一个文件（§9.9）
+              await options.write(value);
+            },
+          }),
+          { signal: options.signal },
+        );
+      } catch (e) {
+        // pipeTo 被取消时抛的是 DOMException AbortError；统一成 EcError，调用方只认错误码
+        if (options.signal.aborted) throw new EcError('CANCELED');
+        throw e;
+      }
+      options.onSegment?.(index + 1, segments.length);
+    });
   }
+  await chain;
 
   return { segments: segments.length, bytes };
 }

@@ -261,7 +261,10 @@ async function* mergeStreams<T>(streams: AsyncIterable<T>[]): AsyncIterable<T> {
 export const ssrSource: DataSource = {
   id: 'ssr',
   async *run(ctx: ResolveContext): AsyncIterable<ProductDraft> {
-    for (const name of [
+    // 下面的候选按优先级排列，必须**顺序**尝试：同一来源产出的 draft 先到先得
+    // （合并器对同优先级是「先到者定标题」），调用方也可能拿到第一份就收尾。
+    // 候选推进本身要等 I/O（经 bridge 读全局变量），所以用 for await 逐个推进。
+    for await (const name of [
       '__INITIAL_STATE__',
       '_ROUTER_DATA',
       '__SSR_DATA__',

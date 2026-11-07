@@ -95,19 +95,17 @@ export const DY_VIDEO_PATHS = [
 /** 阻断 / 异常标记（待验证） */
 export const DY_GONE_PATHS = ['status', 'product_status', 'status_code', 'code'] as const;
 
-export const DyUrlListSchema = z.object({ url_list: z.array(z.string()).optional() }).passthrough();
+export const DyUrlListSchema = z.looseObject({ url_list: z.array(z.string()).optional() });
 
 export type DyUrlList = z.infer<typeof DyUrlListSchema>;
 
 /** 图片载体：{ url_list: [...] } 或 { url } 或纯字符串 */
-export const DyImageSchema = z
-  .object({
-    url_list: z.array(z.string()).optional(),
-    url: z.string().optional(),
-    width: z.number().optional(),
-    height: z.number().optional(),
-  })
-  .passthrough();
+export const DyImageSchema = z.looseObject({
+  url_list: z.array(z.string()).optional(),
+  url: z.string().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+});
 
 export type DyRawImage = { url: string; width?: number; height?: number };
 
@@ -335,16 +333,14 @@ export function formatDyPrice(value: unknown): string | undefined {
  * 信封
  * ------------------------------------------------------------------ */
 
-export const DyPayloadSchema = z
-  .object({
-    data: z.unknown().optional(),
-    status_code: z.unknown().optional(),
-    code: z.unknown().optional(),
-    msg: z.unknown().optional(),
-    promotion: z.unknown().optional(),
-    product: z.unknown().optional(),
-  })
-  .passthrough();
+export const DyPayloadSchema = z.looseObject({
+  data: z.unknown().optional(),
+  status_code: z.unknown().optional(),
+  code: z.unknown().optional(),
+  msg: z.unknown().optional(),
+  promotion: z.unknown().optional(),
+  product: z.unknown().optional(),
+});
 
 /**
  * findDyRoot 的结果缓存。

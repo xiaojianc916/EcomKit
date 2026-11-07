@@ -1,3 +1,4 @@
+import { createConcurrencyPool } from '../jobs/concurrency-pool';
 import { type KeyValueStore, storeAsKv } from '../storage/idb';
 import { STORAGE_KEYS } from '../storage/keys';
 
@@ -28,6 +29,13 @@ export function folderIndexKey(rootId: string, platform: string, productId: stri
   return `${rootId}:${platform}:${productId}`;
 }
 
+/**
+ * clearRoot 删除索引时的并发上限。
+ * 这些都是彼此独立的删除（谁先谁后都不影响结果），但用户换目录时索引可能有几千条，
+ * 一次性 Promise.all 会把几千个 IndexedDB 事务同时压进浏览器，比串行还慢。
+ */
+const CLEAR_CONCURRENCY = 32;
+
 /** 键的前缀，clearRoot 用它过滤；注意分隔符是冒号，产品 ID 里不会有冒号 */
 export function folderIndexPrefix(rootId: string): string {
   return `${rootId}:`;
@@ -52,9 +60,29 @@ export function createFolderIndex(kv: KeyValueStore<FolderIndexEntry>): FolderIn
     async clearRoot(rootId) {
       const prefix = folderIndexPrefix(rootId);
       const keys = await kv.keys();
+      // 删除彼此独立、无顺序要求，用有界并发而不是一个个串行等
+      const pool = createConcurrencyPool(CLEAR_CONCURRENCY);
+      // 并发池会吞掉任务异常，所以自己记第一个失败，等全部收尾后再抛：
+      // 否则已经提交的删除会变成没人处理的 rejection。串行版本是「第一个失败即中止」，
+      // 这里改成「先做完在跑的那批，再把第一个错误抛出去」，对外仍然是 reject。
+      // 用 failed 布尔而不是「failure !== undefined」判断：抛出的值可能是 undefined
+      let failed = false;
+      let failure: unknown;
       for (const key of keys) {
-        if (key.startsWith(prefix)) await kv.del(key);
+        if (!key.startsWith(prefix)) continue;
+        void pool.add(async () => {
+          try {
+            await kv.del(key);
+          } catch (e) {
+            if (!failed) {
+              failed = true;
+              failure = e;
+            }
+          }
+        });
       }
+      await pool.onIdle();
+      if (failed) throw failure;
     },
   };
 }

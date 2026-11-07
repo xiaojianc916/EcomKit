@@ -328,6 +328,9 @@ export function primaryActionModel(state: PrimaryActionState): PrimaryActionMode
   }
 
   const selected = orderedKinds(selectedKinds);
+  // 下面的「有素材的类别是不是都勾上了」要逐个查 selected：先建一次 Set 复用，
+  // 因为 every 里每次 includes() 都要扫一遍整个数组。
+  const selectedSet = new Set<AssetKind>(selected);
   const selectedTotal = sumCounts(counts, selected);
   const picking = selectedKeys.length > 0;
   const kindsWithAssets = KIND_ORDER.filter((k) => (counts[k] ?? 0) > 0);
@@ -402,7 +405,7 @@ export function primaryActionModel(state: PrimaryActionState): PrimaryActionMode
   }
 
   // 8) 就绪（§10.4 第 2–3 行）
-  if (kindsWithAssets.length > 0 && kindsWithAssets.every((k) => selected.includes(k))) {
+  if (kindsWithAssets.length > 0 && kindsWithAssets.every((k) => selectedSet.has(k))) {
     return {
       label: `下载 ${selectedTotal} 个文件`,
       variant: 'accent',

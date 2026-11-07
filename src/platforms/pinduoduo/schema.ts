@@ -166,17 +166,15 @@ export const PDD_GONE_PATHS = [
 
 /**
  * 宽松的图片对象：真实数据里图片既可能是字符串，也可能是对象。
- * passthrough 保证多出来的字段（例如 watermark、quality）不会让整条数据校验失败。
+ * looseObject 保留未知字段（例如 watermark、quality），不会让整条数据校验失败。
  */
-export const PddImageSchema = z
-  .object({
-    url: z.string().optional(),
-    thumbUrl: z.string().optional(),
-    thumb_url: z.string().optional(),
-    width: z.number().optional(),
-    height: z.number().optional(),
-  })
-  .passthrough();
+export const PddImageSchema = z.looseObject({
+  url: z.string().optional(),
+  thumbUrl: z.string().optional(),
+  thumb_url: z.string().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+});
 
 export type PddRawImage = {
   url: string;
@@ -351,18 +349,16 @@ export function fenToYuan(fen: number): string {
   return `¥${(fen / 100).toFixed(2)}`;
 }
 
-/** 抓包数据的外部信封：只要能找到 goods 容器就算有效，其余字段 passthrough */
-export const PddPayloadSchema = z
-  .object({
-    store: z.unknown().optional(),
-    goods: z.unknown().optional(),
-    mall: z.unknown().optional(),
-    data: z.unknown().optional(),
-    result: z.unknown().optional(),
-    error_code: z.unknown().optional(),
-    success: z.unknown().optional(),
-  })
-  .passthrough();
+/** 抓包数据的外部信封：只要能找到 goods 容器就算有效，其余字段一律保留 */
+export const PddPayloadSchema = z.looseObject({
+  store: z.unknown().optional(),
+  goods: z.unknown().optional(),
+  mall: z.unknown().optional(),
+  data: z.unknown().optional(),
+  result: z.unknown().optional(),
+  error_code: z.unknown().optional(),
+  success: z.unknown().optional(),
+});
 
 export type PddPayload = z.infer<typeof PddPayloadSchema>;
 

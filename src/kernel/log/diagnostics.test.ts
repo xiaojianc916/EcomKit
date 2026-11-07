@@ -138,7 +138,11 @@ describe('buildDiagnostics（§6.7 诊断包）', () => {
 
   it('可以 JSON.stringify 往返（纯数据）', () => {
     const pkg = buildDiagnostics({ ...BASE, jobs: [job('j1')] }, 1);
-    expect(JSON.parse(JSON.stringify(pkg))).toEqual(pkg);
+    const text = JSON.stringify(pkg);
+    expect(JSON.parse(text)).toEqual(pkg);
+    // 再序列化一次得到同样的字符串：包里没有 Date / Map / undefined 这类
+    // 「往返一次就变形」的值 —— 诊断包必须能被 JSON 无损往返
+    expect(JSON.stringify(JSON.parse(text))).toBe(text);
   });
 
   it('页面 URL 被脱敏', () => {

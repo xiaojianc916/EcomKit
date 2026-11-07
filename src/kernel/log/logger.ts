@@ -63,7 +63,7 @@ export function getLogLevel(): LogLevel {
 function emit(level: LogLevel, scope: string, msg: string, data?: unknown): void {
   if (LEVEL_ORDER[level] < LEVEL_ORDER[currentLevel]) return;
   const entry: LogEntry = { at: Date.now(), level, scope, msg };
-  if (data !== undefined) entry.data = safeClone(data);
+  if (data !== undefined) entry.data = snapshotData(data);
   logBuffer.push(entry);
   const line = `[${scope}] ${msg}`;
   if (level === 'error') console.error(line, data ?? '');
@@ -73,13 +73,18 @@ function emit(level: LogLevel, scope: string, msg: string, data?: unknown): void
 }
 
 /**
- * 日志数据的快照拷贝。
+ * 日志数据的快照拷贝：先尽量拿结构化克隆，拿不到时退回 JSON 往返拿到一份 JSON 安全的副本。
  *
  * 优先用官方的 structuredClone（结构化克隆算法，原生实现）：JSON 往返要先把整个
  * 对象序列化成字符串再解析回来，对大对象的开销是 3~5 倍，而且会丢掉 Date / Map 的语义
- * （诊断包的 toSkeleton 对 Date 本来就有专门分支）。拿不到或用不了时再退回 JSON。
+ * （诊断包的 toSkeleton 对 Date 本来就有专门分支）。
+ *
+ * **JSON 那一段是有意保留的兜底，不是漏改成 structuredClone**：走到那里说明 structuredClone
+ * 已经抛过了（数据里有函数、Proxy、DOM 节点这类不可克隆的东西，日志里很常见），
+ * 此时要的就是「把数据压成 JSON 能表达的样子」这份快照，而不是再拷贝一次原对象 ——
+ * 名字里的 snapshot 就是在说这件事。
  */
-function safeClone(v: unknown): unknown {
+function snapshotData(v: unknown): unknown {
   if (typeof structuredClone === 'function') {
     try {
       return structuredClone(v);

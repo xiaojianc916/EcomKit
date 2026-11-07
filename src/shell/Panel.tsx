@@ -1,14 +1,12 @@
-import { ArrowLeft, ChevronRight, Settings } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
 import type { RegisteredFeature } from '../features/types';
 import type { ErrorCode } from '../kernel/errors/codes';
 import type { ProductSnapshot } from '../kernel/model/product';
-import { Tooltip } from '../kernel/ui-kit';
-import { type BlockerActionId, BlockerNotice } from './BlockerNotice';
+import type { BlockerActionId } from './BlockerNotice';
 import { FeatureTabs } from './FeatureTabs';
-import { PlatformLogo } from './PlatformLogo';
-import { ProductHeader } from './ProductHeader';
+import { PanelBody } from './PanelBody';
+import { PanelTitleBar } from './PanelTitleBar';
 
 /**
  * 面板（§10.2 面板形态、§10.3 布局）。
@@ -22,8 +20,10 @@ import { ProductHeader } from './ProductHeader';
  * - 最大高度 100vh − 96px，超出部分**面板内部滚动**；滚动区 overscroll-behavior: contain，
  *   在面板里滚动不会带动页面（§10.5 滚动隔离）。
  * - 标题栏**不能拖动**（§10.3 ①）：避免和点击冲突。
- * - Esc 收起面板（§10.5 键盘操作）。按键只在本面板内处理，不劫持页面。
+ * - Esc 收起面板（§10.5 键盘操作）：交给原生 <dialog> 的 cancel 事件，不劫持页面的 Esc。
  * - 面板展开时从右侧滑入，160ms ease-out（§10.6 动效）。
+ * - 内容区拆成 PanelTitleBar / PanelBody 两块：标题栏只认平台与两个图标按钮，
+ *   内容区只认「阻断 / 识别中 / 商品信息 / 设置」四种互斥状态。
  */
 export interface PanelViewProps {
   platformName: string;
@@ -62,33 +62,53 @@ export interface PanelViewProps {
 export const PANEL_WIDTH = 360;
 export const PANEL_GAP = 16;
 
-export function Panel({
-  platformName,
-  platformId,
-  platformColor,
-  platformRing,
-  snapshot,
-  blocker,
-  completeness,
-  top,
-  features,
-  activeFeature,
-  onSelectFeature,
-  onClose,
-  view,
-  onOpenSettings,
-  onCloseSettings,
-  settingsView,
-  onCopy,
-  onBlockerAction,
-  supportsMobileMode,
-  onRescan,
-  children,
-  autoFocus = false,
-}: PanelViewProps) {
-  const rootRef = useRef<HTMLDivElement>(null);
+export function Panel(props: PanelViewProps) {
+  const {
+    platformName,
+    platformId,
+    platformColor,
+    platformRing,
+    snapshot,
+    blocker,
+    completeness,
+    top,
+    features,
+    activeFeature,
+    onSelectFeature,
+    onClose,
+    view,
+    onOpenSettings,
+    onCloseSettings,
+    settingsView,
+    onCopy,
+    onBlockerAction,
+    supportsMobileMode,
+    onRescan,
+    children,
+    autoFocus = false,
+  } = props;
 
-  // Esc 收起面板（§10.5）。只在本面板有焦点时生效，不抢页面的 Esc。
+  const rootRef = useRef<HTMLDialogElement>(null);
+
+  /*
+   * 用原生 <dialog> 而不是 role="dialog" 的 div：语义、焦点容器、读屏器播报都由元素本身负责。
+   *
+   * 只用 open 属性（= show() 的非模态状态），**不用** showModal()：
+   * 工具箱面板是贴在商品页右侧的一层，页面本身仍然要能点能滚 ——
+   * §10.5「手动展开时面板覆盖在内容上」「在面板里滚动不会带动页面」，
+   * 以及验收项 A17「面板不抢页面快捷键和滚动」。showModal() 会把页面其余部分
+   * 变成 inert，那是另一套交互（真模态框），用户在面板开着时就点不了页面了。
+   *
+   * 写 open 而不是在 effect 里调 show()：属性在首帧就在，面板不会先闪一下空白。
+   */
+
+  /*
+   * Esc 收起面板（§10.5 键盘操作）。
+   *
+   * 非模态 <dialog> 没有浏览器自带的 cancel/Esc 行为，所以这条仍然自己处理：
+   * 监听挂在面板节点上（不是 document），按键只在本面板有焦点时生效，不劫持页面的 Esc。
+   * 与拆标签前完全一致 —— 包括「下拉框已吃掉 Esc 时面板行为不变」这一点。
+   */
   useEffect(() => {
     const node = rootRef.current;
     if (node === null) return;
@@ -105,22 +125,30 @@ export function Panel({
     if (autoFocus) rootRef.current?.focus();
   }, [autoFocus]);
 
-  // 设置视图不依赖商品数据：识别失败 / 阻断时也要能进去改设置（保存方式选错了正是原因之一）
   const settingsVisible = view === 'settings';
   const showContent = snapshot !== null && blocker === null;
-  // 阻断时 ② 之外的部分全部隐藏（§10.4「阻断和异常」）；设置视图下什么都不占位
   const showBody = showContent && !settingsVisible;
 
   return (
-    <div
+    <dialog
       ref={rootRef}
       className="ec-panel ec-root"
-      role="dialog"
       aria-label={settingsVisible ? '素材下载设置' : '素材下载面板'}
+      // 非模态：等价于 show()，但首帧就可见（effect 里调 show 会先渲染一帧未打开的对话框）
+      open
       tabIndex={-1}
       style={{
+        // 原生 <dialog> 的 UA 样式带 margin: auto / border / padding / max-width / inset，
+        // 必须整体覆盖：面板是贴右侧固定定位的卡片，不是居中的模态框。
+        // <dialog> 默认还是 display: block + color/background 走系统色，下面一并覆盖。
         position: 'fixed',
+        // UA 对 dialog 写了 inset-inline-start: 0（即 left: 0），这里必须显式撤回：
+        // 否则 left 和 right 同时存在时 left 优先，面板会跑到屏幕左边。
+        left: 'auto',
         right: PANEL_GAP,
+        margin: 0,
+        padding: 0,
+        border: '1px solid var(--ec-line)',
         // 顶部和把手对齐，超出视口时向上收拢（§10.2）
         top: Math.max(PANEL_GAP, Math.min(top, 24)),
         zIndex: 2147483646,
@@ -131,7 +159,6 @@ export function Panel({
         // E2E 会在 html{font-size:20px} 的页面上断言这里仍是 360px。
         width: `${PANEL_WIDTH}px`,
         maxHeight: 'calc(100vh - 96px)',
-        border: '1px solid var(--ec-line)',
         borderRadius: 10,
         background: 'var(--ec-bg)',
         boxShadow: '0 8px 24px rgba(15, 20, 30, .12), 0 0 0 1px rgba(15, 20, 30, .06)',
@@ -139,116 +166,32 @@ export function Panel({
         outline: 'none',
       }}
     >
-      {/* ① 标题栏 40px，不能拖动（§10.3 ①） */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          height: 40,
-          padding: '0 8px 0 16px',
-          borderBottom: '1px solid var(--ec-line)',
-          flex: 'none',
-        }}
-      >
-        {/*
-          左上角是平台图标而不是「色点 + 平台名」：用户一眼就知道自己在哪个平台，
-          图标比两个汉字更省标题栏的宽度（360px 里还要放两个图标按钮）。
-          没有对应图标时退回色点 + 文字，不至于空一块。
-        */}
-        {platformId === undefined ? null : (
-          <PlatformLogo platformId={platformId} name={platformName} height={18} />
-        )}
-        {platformId === undefined ? (
-          <>
-            {platformColor === undefined ? null : (
-              <span
-                aria-hidden="true"
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: platformColor,
-                  ...(platformRing === undefined ? {} : { boxShadow: `0 0 0 1px ${platformRing}` }),
-                }}
-              />
-            )}
-            {/* 不写产品名：用户知道自己装的是什么（§10.3 ①） */}
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ec-text)' }}>
-              {platformName}
-            </span>
-          </>
-        ) : null}
-        <span style={{ flex: 1 }} />
-        {settingsVisible ? (
-          <Tooltip content="返回素材">
-            <button
-              type="button"
-              className="ec-icon-btn"
-              aria-label="返回素材"
-              onClick={onCloseSettings}
-            >
-              <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
-            </button>
-          </Tooltip>
-        ) : (
-          <Tooltip content="设置">
-            <button
-              type="button"
-              className="ec-icon-btn"
-              aria-label="设置"
-              onClick={onOpenSettings}
-            >
-              <Settings size={16} strokeWidth={1.75} aria-hidden="true" />
-            </button>
-          </Tooltip>
-        )}
-        <Tooltip content="收起到边缘 · Alt+Shift+E">
-          <button type="button" className="ec-icon-btn" aria-label="收起到边缘" onClick={onClose}>
-            <ChevronRight size={16} strokeWidth={1.75} aria-hidden="true" />
-          </button>
-        </Tooltip>
-      </div>
+      <PanelTitleBar
+        platformName={platformName}
+        {...(platformId === undefined ? {} : { platformId })}
+        {...(platformColor === undefined ? {} : { platformColor })}
+        {...(platformRing === undefined ? {} : { platformRing })}
+        settingsVisible={settingsVisible}
+        onOpenSettings={onOpenSettings}
+        onCloseSettings={onCloseSettings}
+        onClose={onClose}
+      />
 
       {/* ①之后：滚动区，overscroll-behavior: contain（§10.5 滚动隔离） */}
       <div
         style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}
       >
-        {settingsVisible ? (
-          settingsView
-        ) : blocker !== null ? (
-          <BlockerNotice
-            code={blocker}
-            onAction={(action) => {
-              // 「重新识别」是外壳的动作，其余交给上层按错误码处理（§10.4）
-              if (action === 'rescan') onRescan();
-              else onBlockerAction(action);
-            }}
-            {...(supportsMobileMode === undefined ? {} : { supportsMobileMode })}
-            extraAction={{ id: 'rescan', label: '重新识别' }}
-          />
-        ) : snapshot === null ? (
-          <div style={{ padding: '12px 16px 16px', fontSize: 13, color: 'var(--ec-text-2)' }}>
-            正在识别商品…
-          </div>
-        ) : (
-          <>
-            {/* ② 商品信息 72px */}
-            <ProductHeader snapshot={snapshot} onCopy={onCopy} />
-            {/* 部分超时：不阻断，只在附加说明里说一句（§10.4 最后一行） */}
-            {completeness === 'partial' ? (
-              <div
-                style={{
-                  padding: '0 16px 8px',
-                  fontSize: 12,
-                  color: 'var(--ec-text-2)',
-                }}
-              >
-                部分数据加载超时，素材可能不完整
-              </div>
-            ) : null}
-          </>
-        )}
+        <PanelBody
+          settingsVisible={settingsVisible}
+          settingsView={settingsView}
+          blocker={blocker}
+          snapshot={snapshot}
+          completeness={completeness}
+          {...(supportsMobileMode === undefined ? {} : { supportsMobileMode })}
+          onCopy={onCopy}
+          onBlockerAction={onBlockerAction}
+          onRescan={onRescan}
+        />
 
         {/* 功能标签：只有一个功能时不渲染（§8.5） */}
         {showBody ? (
@@ -262,6 +205,6 @@ export function Panel({
         {/* 功能插槽 */}
         {showBody ? children : null}
       </div>
-    </div>
+    </dialog>
   );
 }
