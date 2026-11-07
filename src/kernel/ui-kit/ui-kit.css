@@ -528,6 +528,85 @@
   white-space: nowrap;
 }
 /*
+ * ---------- ScrollArea 自绘细滚动条（§10.6） ----------
+ *
+ * 和下面那套系统细滚动条并存、不互相替换：
+ * · 系统条（6px）留给 popup / options / grant —— 那是独立页面，系统条就是对的；
+ * · 面板里的滚动区用 .ec-scroll，3px 覆盖式滑块，不占布局宽度。
+ * 两者都不加轨道、不加箭头、不画圆角外的装饰，视觉上是一条线而不是一个控件。
+ */
+.ec-scroll {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* flex 子项默认 min-height:auto，会被内容顶开 —— 不写这条，面板里的滚动区永远压不下去 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/*
+ * 滚动的仍然是内层这个真元素：滚轮、键盘、触屏惯性、读屏器语义全都是原生的，
+ * 只是把系统条藏掉、换成自己画的滑块。
+ * 隐藏要写两套：Chromium 认 ::-webkit-scrollbar，Firefox 认标准属性 scrollbar-width。
+ * 选择器带上外层（.ec-scroll .ec-scroll__viewport）是**故意加特指度**：下面给独立页面写的
+ * .ec-root ::-webkit-scrollbar 是 0-1-1，单类写法 0-1-0 会被它盖回去，面板里的系统条又冒出来。
+ */
+.ec-scroll .ec-scroll__viewport {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 父级是 flex 列：不写 min-height:0 会被内容顶开，max-height 就永远不生效 */
+  flex: 1 1 auto;
+  min-height: 0;
+  scrollbar-width: none;
+}
+
+.ec-scroll .ec-scroll__viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/*
+ * 滑块：3px 宽、圆角 2px、贴右侧内缘 2px。
+ * 位置和高度由组件内联写死（逐帧跟手），这里只管长相和显隐。
+ * 覆盖式而不是占位式：面板内容本来就有 16px 右内边距，滑块正好压在留白上。
+ */
+.ec-scroll__thumb {
+  position: absolute;
+  right: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--ec-scrollbar);
+  /* 只动 opacity：位置是 JS 逐帧算的，任何 transition 都会变成"慢半拍" */
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+  /* 3px 不好点中，但也只能这么细 —— 加宽就等于多了一个看得见的槽。
+     手感由"整块滚动区悬停即亮"补足，用户不用瞄准它 */
+  touch-action: none;
+  cursor: grab;
+}
+
+.ec-scroll__thumb[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+/* 悬停/滚动/拖拽时亮起；静止 800ms 后组件把它切回 false，靠 opacity 淡出 */
+.ec-scroll__thumb[data-visible="true"] {
+  opacity: 1;
+}
+
+.ec-scroll__thumb:hover,
+.ec-scroll__thumb[data-dragging="true"] {
+  background: var(--ec-scrollbar-hover);
+}
+
+/* 遵循"减少动画"：淡入淡出也一并去掉，直接出现/消失 */
+@media (prefers-reduced-motion: reduce) {
+  .ec-scroll__thumb {
+    transition: none;
+  }
+}
+
+/*
  * ---------- 细滚动条（§10.6） ----------
  *
  * 面板嵌在别人的商品页里，系统滚动条（16px、带箭头和轨道）在这个尺度上太抢眼。
@@ -574,8 +653,19 @@
   animation: ec-panel-in var(--ec-motion);
 }
 
+/*
+ * 把手的过渡写在这里而不是组件行内：行内样式优先级压过样式表，
+ * 写在行内的话下面 prefers-reduced-motion 那条永远打不过它。
+ * 拖动中必须没有过渡，否则把手会慢半拍追着指针 —— 交给 data-dragging 关掉。
+ */
 .ec-handle {
-  transition: top var(--ec-motion);
+  transition:
+    top var(--ec-motion),
+    background-color var(--ec-motion);
+}
+
+.ec-handle[data-dragging="true"] {
+  transition: none;
 }
 
 @keyframes ec-panel-in {
@@ -586,6 +676,40 @@
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+/*
+ * 停靠左侧时的入场方向：属性在 Panel 自己的元素上（data-ec-side）。
+ *
+ * 动画是「从贴的那条边滑进来」：靠右 = +8px → 0，靠左必须镜像成 −8px → 0，
+ * 否则面板会从屏幕外侧反向窜进来。属性选择器比上面那条 .ec-panel 多一级，
+ * 所以不需要 !important、也不改它 —— 其他用 .ec-panel 的地方方向不变。
+ *
+ * 下面那条 reduced-motion 是**必须**的：文件末尾的 .ec-panel { animation: none }
+ * 权重更低，压不住这里的属性选择器，不重复写会漏掉「减少动画」。
+ */
+/* 属性写在面板自己身上；同时认「属性挂在祖先上」的写法（外壳根节点统一带一份时也生效） */
+.ec-panel[data-ec-side="left"],
+[data-ec-side="left"] .ec-panel {
+  animation: ec-panel-in-left var(--ec-motion);
+}
+
+@keyframes ec-panel-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ec-panel[data-ec-side="left"],
+  [data-ec-side="left"] .ec-panel {
+    animation: none;
   }
 }
 

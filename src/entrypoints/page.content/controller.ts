@@ -27,7 +27,6 @@ import { connectJobPort } from '../../kernel/messaging/port';
 import type { PortMessage, TabState } from '../../kernel/messaging/protocol';
 import { sendMessage } from '../../kernel/messaging/runtime';
 import type { ProductDraft, ProductSnapshot } from '../../kernel/model/product';
-import type { AutoOpenMode, ThemeMode } from '../../kernel/settings/schema';
 import {
   patchUiPrefs,
   readSettings,
@@ -40,7 +39,7 @@ import type { DraftAccumulator } from '../../platforms/shared/merge';
 import type { CapturedPayload, PlatformManifest } from '../../platforms/types';
 import type { ShellProps } from '../../shell/Shell';
 import { PanelSettingsView } from '../../shell/settings/PanelSettingsView';
-import type { PrefsPort } from '../../shell/store';
+import type { PrefsPort, ShellUiSettings } from '../../shell/store';
 import {
   createShellStore,
   HANDLE_DONE_TTL_MS,
@@ -109,9 +108,11 @@ export function createPageController(ctx: ContentScriptContext): PageController 
   let bridge: PageBridge | null = null;
   let disconnectPort: (() => void) | null = null;
   let store: ShellStore | null = null;
-  let uiSettings: { autoOpen: AutoOpenMode; theme: ThemeMode } = {
+  /** 影响外壳渲染的设置项；side 变更时同步进 store，面板当场换边 */
+  let uiSettings: ShellUiSettings = {
     autoOpen: 'panel',
     theme: 'system',
+    side: 'right',
   };
   /** 本商品是否已经按 §10.5 决定过形态：只决定一次，之后尊重用户手动收起/展开 */
   let formDecided = false;
@@ -200,9 +201,16 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     return store;
   }
 
-  function applySettings(next: { autoOpen: AutoOpenMode; theme: ThemeMode }): void {
+  /**
+   * 设置变了就同步进 store。
+   *
+   * theme 和 side 都是「改了立刻能看见」的项：设置视图本身就在面板里，
+   * 用户选「靠左」时如果等下一次 syncForm 才换边，会变成「选完没反应」。
+   * autoOpen 不用写进 store —— 它只在 syncForm 时参与形态决策。
+   */
+  function applySettings(next: ShellUiSettings): void {
     uiSettings = next;
-    ensureStore().setState({ theme: next.theme });
+    ensureStore().setState({ theme: next.theme, side: next.side });
   }
 
   /** 状态变了就通知 React（index.tsx 的 useSyncExternalStore） */
@@ -501,7 +509,11 @@ export function createPageController(ctx: ContentScriptContext): PageController 
       void (async () => {
         try {
           const settings = await readSettings();
-          applySettings({ autoOpen: settings.shell.autoOpen, theme: settings.shell.theme });
+          applySettings({
+            autoOpen: settings.shell.autoOpen,
+            theme: settings.shell.theme,
+            side: settings.shell.side,
+          });
           notify();
         } catch (e) {
           log.debug('readSettings failed, keep defaults', e);
@@ -571,7 +583,11 @@ export function createPageController(ctx: ContentScriptContext): PageController 
       });
 
       watchSettings((s) => {
-        applySettings({ autoOpen: s.shell.autoOpen, theme: s.shell.theme });
+        applySettings({
+          autoOpen: s.shell.autoOpen,
+          theme: s.shell.theme,
+          side: s.shell.side,
+        });
         notify();
       });
 

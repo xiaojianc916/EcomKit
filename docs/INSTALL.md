@@ -107,6 +107,24 @@ node scripts/install-extension.mjs chrome --keep-open
 
 ## 界面
 
+商品页右侧的工具箱面板（面板与把手贴哪一侧，可在设置 → 工具箱 → 面板位置里切换）：
+
+![商品页面板](./screenshots/panel.png)
+
+收到边缘后剩下的把手；下载中底部的细条就是进度，数字变红表示有失败项：
+
+![把手](./screenshots/handle.png)
+
+面板里的滚动条是自绘的 3px 细条，不占布局宽度，悬停/滚动时才出现：
+
+![滚动条](./screenshots/scrollbar.png)
+
+改成靠左停靠的样子（面板内的收起箭头也一起转向）：
+
+![靠左停靠](./screenshots/panel-left.png)
+
+![设置视图](./screenshots/panel-settings.png)
+
 ![设置页](./screenshots/options.png)
 
 ![工具栏 popup](./screenshots/popup.png)

@@ -62,6 +62,12 @@ const THEME_OPTIONS = [
   { value: 'dark', label: '深色' },
 ] as const;
 
+/** 「靠右」写在前面：默认值既然在右边，第一项就该是它 */
+const PANEL_SIDE_OPTIONS = [
+  { value: 'right', label: '靠右' },
+  { value: 'left', label: '靠左' },
+] as const;
+
 export interface SettingsDraft {
   /** 还没读回来时为 null */
   settings: GlobalSettings | null;
@@ -384,6 +390,18 @@ function ShellSection({
             })
           }
         />
+      </div>
+      <div className="ec-field">
+        <span className="ec-field__label">面板位置</span>
+        <Select
+          label="面板位置"
+          value={settings.shell.side}
+          options={PANEL_SIDE_OPTIONS}
+          onChange={(side) =>
+            update({ shell: { ...settings.shell, side: side as 'right' | 'left' } })
+          }
+        />
+        <span className="ec-field__hint">面板和把手贴在哪一侧，换边后不用刷新页面。</span>
       </div>
     </>
   );

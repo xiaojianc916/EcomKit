@@ -14,6 +14,8 @@ describe('schema 默认值（§11）', () => {
     expect(DEFAULT_GLOBAL_SETTINGS.save.rootPath).toBe('');
     expect(DEFAULT_GLOBAL_SETTINGS.shell.autoOpen).toBe('panel');
     expect(DEFAULT_GLOBAL_SETTINGS.shell.theme).toBe('system');
+    // 新增设置项只靠 zod default 补值，不需要迁移（§6.6）：旧存档里没有 side
+    expect(DEFAULT_GLOBAL_SETTINGS.shell.side).toBe('right');
     expect(DEFAULT_GLOBAL_SETTINGS.jobs.concurrency).toBe(6);
     expect(DEFAULT_GLOBAL_SETTINGS.debug).toBe(false);
     expect(DEFAULT_GLOBAL_SETTINGS.platforms.enabled).toEqual([]);

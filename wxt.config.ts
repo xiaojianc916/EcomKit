@@ -38,7 +38,16 @@ export default defineConfig({
     minimum_chrome_version: '122',
     permissions: ['storage', 'offscreen', 'downloads', 'declarativeNetRequestWithHostAccess'],
     host_permissions: [...PLATFORM_MATCHES, ...CDN_HOSTS, ...REFERER_HOSTS],
-    action: { default_title: '电商素材工具箱' },
+    // icons 由 WXT 扫 public/icon/ 自动填；default_icon 它不推，不写工具栏还是默认灰拼图
+    action: {
+      default_title: '电商素材工具箱',
+      default_icon: {
+        16: 'icon/16.png',
+        32: 'icon/32.png',
+        48: 'icon/48.png',
+        128: 'icon/128.png',
+      },
+    },
     commands: {
       'toggle-toolbox': {
         suggested_key: { default: 'Alt+Shift+E' },

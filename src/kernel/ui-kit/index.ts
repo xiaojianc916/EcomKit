@@ -21,6 +21,7 @@ export {
   usePortalTarget,
 } from './PortalRoot';
 export { Progress, type ProgressProps } from './Progress';
+export { ScrollArea, type ScrollAreaProps } from './ScrollArea';
 export { Select, type SelectOption, type SelectProps } from './Select';
 export { Thumb, type ThumbProps } from './Thumb';
 export { showToast, type ToastAction, type ToastItem, ToastViewport } from './Toast';

@@ -7,7 +7,7 @@ import type { ErrorCode } from '../kernel/errors/codes';
 import type { JobRecord } from '../kernel/jobs/types';
 import type { DirState } from '../kernel/messaging/protocol';
 import type { ProductSnapshot } from '../kernel/model/product';
-import type { GlobalSettings } from '../kernel/settings/schema';
+import type { GlobalSettings, PanelSide } from '../kernel/settings/schema';
 import { PortalRoot, ToastViewport, TooltipProvider } from '../kernel/ui-kit';
 import type { BlockerActionId } from './BlockerNotice';
 import { pickActiveFeature } from './FeatureTabs';
@@ -81,6 +81,7 @@ const selectForm = (s: ShellStoreState) => s.form;
 const selectHandleY = (s: ShellStoreState) => s.handleY;
 const selectViewportHeight = (s: ShellStoreState) => s.viewportHeight;
 const selectTheme = (s: ShellStoreState) => s.theme;
+const selectSide = (s: ShellStoreState) => s.side;
 const selectActiveFeature = (s: ShellStoreState) => s.activeFeature;
 const selectView = (s: ShellStoreState) => s.view;
 
@@ -95,6 +96,7 @@ function useShellSlices(store: ShellStore, features: RegisteredFeature[]) {
   const handleY = useShell(store, selectHandleY);
   const viewportHeight = useShell(store, selectViewportHeight);
   const themeSetting = useShell(store, selectTheme);
+  const side = useShell(store, selectSide);
   const activeFeature = useShell(store, selectActiveFeature);
   const view = useShell(store, selectView);
 
@@ -103,7 +105,7 @@ function useShellSlices(store: ShellStore, features: RegisteredFeature[]) {
     [features, activeFeature],
   );
 
-  return { form, handleY, viewportHeight, themeSetting, view, effectiveFeature };
+  return { form, handleY, viewportHeight, themeSetting, side, view, effectiveFeature };
 }
 
 /**
@@ -205,10 +207,8 @@ export function Shell(props: ShellProps) {
     now,
   } = props;
 
-  const { form, handleY, viewportHeight, themeSetting, view, effectiveFeature } = useShellSlices(
-    store,
-    features,
-  );
+  const { form, handleY, viewportHeight, themeSetting, side, view, effectiveFeature } =
+    useShellSlices(store, features);
   const { onDragEnd, onHandleClick, onSelectFeature, onClose, onOpenSettings, onCloseSettings } =
     useShellActions(store, onFormChange);
 
@@ -227,14 +227,13 @@ export function Shell(props: ShellProps) {
     */
     <HandleBadgeView
       status={status}
+      side={side}
       totalAssets={totalAssets}
       job={job}
       now={now}
       needsAttention={needsAttention}
       handleY={handleY}
       viewportHeight={viewportHeight}
-      {...optionalProp('platformColor', platformColor)}
-      {...optionalProp('platformRing', platformRing)}
       onDragEnd={onDragEnd}
       onClick={onHandleClick}
     />
@@ -261,6 +260,7 @@ export function Shell(props: ShellProps) {
                 blocker={blocker}
                 completeness={completeness}
                 handleY={handleY}
+                side={side}
                 features={features}
                 effectiveFeature={effectiveFeature}
                 onSelectFeature={onSelectFeature}
@@ -303,6 +303,8 @@ interface ShellPanelViewProps {
   blocker: ErrorCode | null;
   completeness: 'full' | 'partial';
   handleY: number;
+  /** 停靠侧（设置项），面板贴哪一边、箭头朝哪边都由它决定 */
+  side: PanelSide;
   features: RegisteredFeature[];
   effectiveFeature: string | null;
   onSelectFeature(id: string): void;
@@ -333,6 +335,7 @@ function ShellPanelView(props: ShellPanelViewProps) {
       blocker={props.blocker}
       completeness={props.completeness}
       top={props.handleY}
+      side={props.side}
       features={props.features}
       activeFeature={effectiveFeature}
       onSelectFeature={props.onSelectFeature}
@@ -359,9 +362,9 @@ interface HandleBadgeViewProps {
   now: number;
   needsAttention: boolean;
   handleY: number;
+  /** 停靠侧：把手贴哪条边 */
+  side: PanelSide;
   viewportHeight: number;
-  platformColor?: string;
-  platformRing?: string;
   onDragEnd(y: number): void;
   onClick(): void;
 }
@@ -393,8 +396,7 @@ function HandleBadgeView(props: HandleBadgeViewProps) {
     <Handle
       y={handleY}
       badge={stableBadge}
-      {...optionalProp('platformColor', props.platformColor)}
-      {...optionalProp('platformRing', props.platformRing)}
+      side={props.side}
       viewportHeight={viewportHeight}
       onDragEnd={props.onDragEnd}
       onClick={props.onClick}
@@ -412,6 +414,7 @@ export function mountShellStore(opts: {
   settings: {
     autoOpen: GlobalSettings['shell']['autoOpen'];
     theme: GlobalSettings['shell']['theme'];
+    side: GlobalSettings['shell']['side'];
   };
 }): { store: ShellStore; dispose(): void } {
   const store = createShellStore({

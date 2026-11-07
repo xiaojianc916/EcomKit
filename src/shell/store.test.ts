@@ -10,6 +10,7 @@ import {
   isViewportNarrow,
   type PrefsPort,
   resolveForm,
+  type ShellUiSettings,
   siteKeyOf,
   themeAttr,
 } from './store';
@@ -26,6 +27,14 @@ function memoryPrefs(): PrefsPort & { data: Map<string, unknown> } {
     },
   };
 }
+
+/** 外壳设置默认值；单测只关心其中一项时用展开覆盖，别把 7 个调用点都写全 */
+const settings = (patch: Partial<ShellUiSettings> = {}): ShellUiSettings => ({
+  autoOpen: 'panel',
+  theme: 'system',
+  side: 'right',
+  ...patch,
+});
 
 function makeJob(patch: Partial<JobRecord> = {}): JobRecord {
   return {
@@ -202,7 +211,7 @@ describe('createShellStore 持久化', () => {
     const store = createShellStore({
       prefs,
       siteKey,
-      settings: { autoOpen: 'panel', theme: 'system' },
+      settings: settings(),
       viewportWidth: 1920,
       viewportHeight: 900,
     });
@@ -214,7 +223,7 @@ describe('createShellStore 持久化', () => {
     const store = createShellStore({
       prefs,
       siteKey,
-      settings: { autoOpen: 'panel', theme: 'system' },
+      settings: settings(),
       viewportWidth: 1920,
       viewportHeight: 900,
     });
@@ -226,7 +235,7 @@ describe('createShellStore 持久化', () => {
     const store = createShellStore({
       prefs: memoryPrefs(),
       siteKey,
-      settings: { autoOpen: 'panel', theme: 'system' },
+      settings: settings(),
       viewportWidth: 1920,
       viewportHeight: 900,
     });
@@ -243,7 +252,7 @@ describe('createShellStore 持久化', () => {
     const store = createShellStore({
       prefs,
       siteKey,
-      settings: { autoOpen: 'panel', theme: 'system' },
+      settings: settings(),
       viewportWidth: 1920,
       viewportHeight: 900,
     });
@@ -255,7 +264,7 @@ describe('createShellStore 持久化', () => {
     const store = createShellStore({
       prefs: memoryPrefs(),
       siteKey,
-      settings: { autoOpen: 'panel', theme: 'system' },
+      settings: settings(),
       viewportWidth: 700,
       viewportHeight: 900,
     });
@@ -268,7 +277,7 @@ describe('createShellStore 持久化', () => {
     const store = createShellStore({
       prefs,
       siteKey,
-      settings: { autoOpen: 'panel', theme: 'system' },
+      settings: settings(),
       viewportWidth: 1920,
       viewportHeight: 900,
     });
@@ -282,11 +291,48 @@ describe('createShellStore 持久化', () => {
     expect(prefs.get<{ view?: string }>(siteKey)?.view).toBeUndefined();
   });
 
+  it('停靠侧跟着设置进来，默认靠右', () => {
+    const store = createShellStore({
+      prefs: memoryPrefs(),
+      siteKey,
+      settings: settings(),
+      viewportWidth: 1920,
+      viewportHeight: 900,
+    });
+    expect(store.getState().side).toBe('right');
+  });
+
+  it("设置成 'left' 时 store 里就是 left（面板贴左边由订阅者读它渲染）", () => {
+    const prefs = memoryPrefs();
+    const store = createShellStore({
+      prefs,
+      siteKey,
+      settings: settings({ side: 'left' }),
+      viewportWidth: 1920,
+      viewportHeight: 900,
+    });
+    expect(store.getState().side).toBe('left');
+    // 站点偏好里只有形态和把手位置：停靠侧是全局设置，写进按站点记的偏好就错了
+    expect(prefs.data.has(siteKey)).toBe(false);
+  });
+
+  it('setState 换边后订阅者能读到新值（设置视图里改完当场生效的路径）', () => {
+    const store = createShellStore({
+      prefs: memoryPrefs(),
+      siteKey,
+      settings: settings(),
+      viewportWidth: 1920,
+      viewportHeight: 900,
+    });
+    store.setState({ side: 'left' });
+    expect(store.getState().side).toBe('left');
+  });
+
   it('视口变矮时把手位置被重新夹紧', () => {
     const store = createShellStore({
       prefs: memoryPrefs(),
       siteKey,
-      settings: { autoOpen: 'panel', theme: 'system' },
+      settings: settings(),
       viewportWidth: 1920,
       viewportHeight: 900,
     });

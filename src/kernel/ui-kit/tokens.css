@@ -67,8 +67,6 @@
   --ec-panel-w: 360px;
   --ec-panel-gap: 16px;
   --ec-panel-max-h: calc(100vh - 96px);
-  --ec-handle-w: 32px;
-  --ec-handle-h: 88px;
   --ec-thumb-sm: 32px;
   --ec-thumb-grid: 72px;
 

@@ -238,6 +238,37 @@ describe('Panel（§10.3 布局）', () => {
     document.documentElement.style.fontSize = '';
   });
 
+  it('默认靠右：right=16px、left=auto，并给 CSS 一个 data-ec-side', () => {
+    const { container } = renderPanel();
+    const panel = container.querySelector('.ec-panel') as HTMLElement;
+    expect(panel.style.right).toBe('16px');
+    expect(panel.style.left).toBe('auto');
+    expect(panel.getAttribute('data-ec-side')).toBe('right');
+  });
+
+  it('靠左停靠：left=16px、right=auto，宽度和间距不变（§10.3）', () => {
+    const { container } = renderPanel({ side: 'left' });
+    const panel = container.querySelector('.ec-panel') as HTMLElement;
+    expect(panel.style.left).toBe('16px');
+    expect(panel.style.right).toBe('auto');
+    expect(panel.style.width).toBe('360px');
+    expect(panel.getAttribute('data-ec-side')).toBe('left');
+  });
+
+  it('靠左时收起箭头朝左（指向面板会缩回去的那条边）；文案不变', () => {
+    const { container } = renderPanel({ side: 'left' });
+    const close = screen.getByRole('button', { name: '收起到边缘' });
+    // lucide 把图标名写成类名，用它判断方向，比快照稳
+    expect(close.querySelector('svg')?.getAttribute('class')).toContain('lucide-chevron-left');
+    expect(container.querySelector('svg.lucide-chevron-right')).toBeNull();
+  });
+
+  it('靠右时收起箭头仍然朝右', () => {
+    renderPanel();
+    const close = screen.getByRole('button', { name: '收起到边缘' });
+    expect(close.querySelector('svg')?.getAttribute('class')).toContain('lucide-chevron-right');
+  });
+
   it('面板最大高度按 100vh − 96px 收（§10.2）', () => {
     const { container } = renderPanel();
     const panel = container.querySelector('.ec-panel') as HTMLElement;

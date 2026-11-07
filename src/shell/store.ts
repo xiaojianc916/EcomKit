@@ -1,6 +1,6 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type { JobRecord } from '../kernel/jobs/types';
-import type { AutoOpenMode, ThemeMode } from '../kernel/settings/schema';
+import type { AutoOpenMode, PanelSide, ThemeMode } from '../kernel/settings/schema';
 import type { ShellForm, ShellPrefs } from './types';
 
 /**
@@ -21,10 +21,11 @@ export interface PrefsPort {
   set<T>(key: string, value: T): void;
 }
 
-/** §10.5 自动展开策略 + §10.6 主题，来自全局设置 */
+/** §10.5 自动展开策略 + §10.6 主题 + §10.3 停靠侧，来自全局设置 */
 export interface ShellUiSettings {
   autoOpen: AutoOpenMode;
   theme: ThemeMode;
+  side: PanelSide;
 }
 
 /** 把手位置允许的纵向范围（§10.2：位置限制在 [80, 100vh − 160]） */
@@ -174,6 +175,11 @@ export interface ShellStoreState {
   view: 'assets' | 'settings';
   /** 主题设置（§10.6）：跟随系统 / 强制浅色 / 强制深色 */
   theme: ThemeMode;
+  /**
+   * 面板停靠侧（§10.3）。放在 store 里而不是设置视图里：切换设置时面板要**当场**
+   * 换边，而设置写盘是防抖的，等 watchSettings 回到页面至少晚 300ms。
+   */
+  side: PanelSide;
   /** 视口宽度，窄视口下不自动展开；窗口 resize 时更新 */
   viewportWidth: number;
   viewportHeight: number;
@@ -232,6 +238,7 @@ export function createShellStore(opts: CreateShellStoreOptions): ShellStore {
     activeFeature: saved.activeFeature ?? null,
     view: 'assets',
     theme: opts.settings.theme,
+    side: opts.settings.side,
     viewportWidth,
     viewportHeight,
     saved,

@@ -3,6 +3,8 @@ import { useEffect, useRef } from 'react';
 import type { RegisteredFeature } from '../features/types';
 import type { ErrorCode } from '../kernel/errors/codes';
 import type { ProductSnapshot } from '../kernel/model/product';
+import type { PanelSide } from '../kernel/settings/schema';
+import { ScrollArea } from '../kernel/ui-kit';
 import type { BlockerActionId } from './BlockerNotice';
 import { FeatureTabs } from './FeatureTabs';
 import { PanelBody } from './PanelBody';
@@ -16,7 +18,7 @@ import { PanelTitleBar } from './PanelTitleBar';
  *   ④ 素材清单每行 48px（在功能块内）  ⑤ 保存位置 32px  ⑥ 主按钮 36px  ⑦ 附加说明
  *
  * 几条必须在这里落实的规则：
- * - 宽 360px，贴在右侧，距离右边缘 16px；顶部和把手对齐。
+ * - 宽 360px，贴边（默认右侧），距离边缘 16px；顶部和把手对齐。停靠侧来自设置（§10.3）。
  * - 最大高度 100vh − 96px，超出部分**面板内部滚动**；滚动区 overscroll-behavior: contain，
  *   在面板里滚动不会带动页面（§10.5 滚动隔离）。
  * - 标题栏**不能拖动**（§10.3 ①）：避免和点击冲突。
@@ -36,6 +38,11 @@ export interface PanelViewProps {
   completeness: 'full' | 'partial';
   /** 顶部对齐的把手位置 */
   top: number;
+  /**
+   * 停靠侧：右侧（默认）或左侧。默认 right 让既有调用点不用改；
+   * Shell 永远显式传，漏传会静默变回右侧而不是报错。
+   */
+  side?: PanelSide;
   features: RegisteredFeature[];
   activeFeature: string | null;
   onSelectFeature(id: string): void;
@@ -62,6 +69,16 @@ export interface PanelViewProps {
 export const PANEL_WIDTH = 360;
 export const PANEL_GAP = 16;
 
+/**
+ * 贴边样式：贴哪边就把距离写在那一边，另一侧写 auto。
+ *
+ * 不能只写一侧：<dialog> 的 UA 样式带 inset-inline-start/end: 0，
+ * 两端都有值时 LTR 下 left 优先，靠右的面板会跑到屏幕左边。
+ */
+function panelEdgeStyle(side: PanelSide): { left: number | 'auto'; right: number | 'auto' } {
+  return side === 'left' ? { left: PANEL_GAP, right: 'auto' } : { left: 'auto', right: PANEL_GAP };
+}
+
 export function Panel(props: PanelViewProps) {
   const {
     platformName,
@@ -72,6 +89,7 @@ export function Panel(props: PanelViewProps) {
     blocker,
     completeness,
     top,
+    side = 'right',
     features,
     activeFeature,
     onSelectFeature,
@@ -137,15 +155,17 @@ export function Panel(props: PanelViewProps) {
       // 非模态：等价于 show()，但首帧就可见（effect 里调 show 会先渲染一帧未打开的对话框）
       open
       tabIndex={-1}
+      // data-ec-side 给 CSS 用：入场动画的 translateX 方向要随停靠侧翻转（ui-kit.css）
+      data-ec-side={side}
       style={{
         // 原生 <dialog> 的 UA 样式带 margin: auto / border / padding / max-width / inset，
-        // 必须整体覆盖：面板是贴右侧固定定位的卡片，不是居中的模态框。
+        // 必须整体覆盖：面板是贴边固定定位的卡片，不是居中的模态框。
         // <dialog> 默认还是 display: block + color/background 走系统色，下面一并覆盖。
         position: 'fixed',
-        // UA 对 dialog 写了 inset-inline-start: 0（即 left: 0），这里必须显式撤回：
-        // 否则 left 和 right 同时存在时 left 优先，面板会跑到屏幕左边。
-        left: 'auto',
-        right: PANEL_GAP,
+        // UA 对 dialog 写了 inset-inline-start/end: 0，左右两边都会被撑上；
+        // 两个属性同时有值时 LTR 下会忽略 right —— 所以贴哪边就必须把另侧显式写回 auto，
+        // 只写一侧的话面板会钉死在屏幕左边。见 panelEdgeStyle。
+        ...panelEdgeStyle(side),
         margin: 0,
         padding: 0,
         border: '1px solid var(--ec-line)',
@@ -171,16 +191,20 @@ export function Panel(props: PanelViewProps) {
         {...(platformId === undefined ? {} : { platformId })}
         {...(platformColor === undefined ? {} : { platformColor })}
         {...(platformRing === undefined ? {} : { platformRing })}
+        side={side}
         settingsVisible={settingsVisible}
         onOpenSettings={onOpenSettings}
         onCloseSettings={onCloseSettings}
         onClose={onClose}
       />
 
-      {/* ①之后：滚动区，overscroll-behavior: contain（§10.5 滚动隔离） */}
-      <div
-        style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}
-      >
+      {/*
+        ①之后：滚动区。用 ui-kit 的 ScrollArea —— 系统滚动条那 6px 是**占位**的，
+        360px 宽的面板里等于白白吃掉一列缩略图；这里换成 3px 覆盖式滑块，
+        滚动本身（滚轮/键盘/惯性）仍然是原生行为（§10.5 滚动隔离、§10.6 细滚动条）。
+        外层同时把 flex 交给 ScrollArea 自己的 .ec-scroll，面板才能正确收缩。
+      */}
+      <ScrollArea label={settingsVisible ? '设置' : '素材清单'}>
         <PanelBody
           settingsVisible={settingsVisible}
           settingsView={settingsView}
@@ -204,7 +228,7 @@ export function Panel(props: PanelViewProps) {
 
         {/* 功能插槽 */}
         {showBody ? children : null}
-      </div>
+      </ScrollArea>
     </dialog>
   );
 }

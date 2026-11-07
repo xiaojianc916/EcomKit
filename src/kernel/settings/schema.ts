@@ -17,6 +17,15 @@ export type AutoOpenMode = z.infer<typeof AutoOpenMode>;
 export const ThemeMode = z.enum(['system', 'light', 'dark']);
 export type ThemeMode = z.infer<typeof ThemeMode>;
 
+/**
+ * 面板停靠侧（§10.3）。
+ *
+ * 为什么是全局设置而不是按站点记：宽屏用户把商品内容留在右边、面板靠左，
+ * 是「屏幕怎么摆」决定的习惯，和这家店铺/这个页面无关。
+ */
+export const PanelSide = z.enum(['right', 'left']);
+export type PanelSide = z.infer<typeof PanelSide>;
+
 export const GlobalSettings = z.object({
   save: z
     .object({
@@ -29,6 +38,8 @@ export const GlobalSettings = z.object({
     .object({
       autoOpen: AutoOpenMode.default('panel'),
       theme: ThemeMode.default('system'),
+      /** 默认靠右：和浏览器滚动条同侧，不压住商品主图那一列 */
+      side: PanelSide.default('right'),
     })
     .prefault({}),
   platforms: z

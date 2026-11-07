@@ -1,4 +1,5 @@
-import { ArrowLeft, ChevronRight, Settings } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Settings } from 'lucide-react';
+import type { PanelSide } from '../kernel/settings/schema';
 import { Tooltip } from '../kernel/ui-kit';
 import { PlatformLogo } from './PlatformLogo';
 
@@ -19,6 +20,11 @@ export interface PanelTitleBarProps {
   platformId?: string;
   platformColor?: string;
   platformRing?: string;
+  /**
+   * 停靠侧。箭头要指向「面板会缩回去的那条边」——靠右时朝右、靠左时朝左，
+   * 箭头方向和动画方向一致，用户才知道点下去面板去哪了。
+   */
+  side?: PanelSide;
   /** 面板里显示的是设置视图（图标按钮从「设置」变成「返回素材」） */
   settingsVisible: boolean;
   onOpenSettings(): void;
@@ -31,6 +37,7 @@ export function PanelTitleBar({
   platformId,
   platformColor,
   platformRing,
+  side = 'right',
   settingsVisible,
   onOpenSettings,
   onCloseSettings,
@@ -90,7 +97,11 @@ export function PanelTitleBar({
       )}
       <Tooltip content="收起到边缘 · Alt+Shift+E">
         <button type="button" className="ec-icon-btn" aria-label="收起到边缘" onClick={onClose}>
-          <ChevronRight size={16} strokeWidth={1.75} aria-hidden="true" />
+          {side === 'left' ? (
+            <ChevronLeft size={16} strokeWidth={1.75} aria-hidden="true" />
+          ) : (
+            <ChevronRight size={16} strokeWidth={1.75} aria-hidden="true" />
+          )}
         </button>
       </Tooltip>
     </div>
