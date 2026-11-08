@@ -35,6 +35,7 @@ import {
 } from '../../kernel/settings/store';
 import { findPageKind, PLATFORM_MANIFESTS } from '../../platforms/registry';
 import { getPlatformResolver } from '../../platforms/registry.resolver';
+import { clearInlineGlobalCache } from '../../platforms/shared/inline-ssr';
 import type { DraftAccumulator } from '../../platforms/shared/merge';
 import type { CapturedPayload, PlatformManifest } from '../../platforms/types';
 import type { ShellProps } from '../../shell/Shell';
@@ -280,6 +281,11 @@ export function createPageController(ctx: ContentScriptContext): PageController 
     abort = new AbortController();
     match = { platform: hit.platform.id, pageKind: hit.kind, productId: hit.productId };
     manifest = hit.platform;
+    /**
+     * SPA 换商品可能原地改写 window.rawData（脚本节点数量不变），
+     * 内联 SSR 的解析缓存必须在这里显式作废，否则阻断判定和解析会读到上一个商品的数据。
+     */
+    clearInlineGlobalCache(document);
     snapshot = null;
     blocker = null;
     completeness = 'full';
@@ -391,6 +397,13 @@ export function createPageController(ctx: ContentScriptContext): PageController 
       decideForm();
       notify();
       log.warn('resolve failed', { code });
+    } finally {
+      /**
+       * 内联 SSR 的解析结果（真实商品页常见 1~3MB）只服务于本次识别。
+       * 识别结束就放掉，否则它会一直挂在 document 的 WeakMap 上直到标签页关闭；
+       * 下一次识别（换商品 / 重新扫描）本来就会在入口处显式作废缓存。
+       */
+      clearInlineGlobalCache(document);
     }
   }
 

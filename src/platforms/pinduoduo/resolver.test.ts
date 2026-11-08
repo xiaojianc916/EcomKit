@@ -4,6 +4,7 @@ import type { CapturedPayload, ResolveContext } from '../types';
 import pddManifest from './manifest';
 import {
   captureSource,
+  collectPddDomAssets,
   detectPddBlocker,
   detectPddBlockerAsync,
   domSource,
@@ -250,6 +251,27 @@ describe('domSource：DOMContentLoaded 后产出一份', () => {
     controller.abort();
     const { ctx } = makeCtx({ signal: controller.signal });
     expect(await collect(domSource, ctx)).toHaveLength(0);
+  });
+
+  it('main/detail/sku 都已有结构化数据时直接结束，不再跑 6 秒的 DOM 轮询', async () => {
+    // 类名规则故意落空：旧实现会进入「CDN 大图」启发式并轮询 6 秒
+    const doc = emptyDoc(
+      '<html><body><div><img src="https://img.pddpic.com/a.jpg" width="400"></div></body></html>',
+    );
+    Object.defineProperty(doc, 'readyState', { value: 'complete', configurable: true });
+    const { ctx } = makeCtx({ document: doc });
+    Object.assign(ctx, { hasStructured: (kind: string) => kind !== 'video' });
+    const started = Date.now();
+    expect(await collect(domSource, ctx)).toHaveLength(0);
+    expect(Date.now() - started, '不应该等到 DOM_POLL_MS').toBeLessThan(2000);
+  });
+
+  it('被结构化数据覆盖的类别不会再从大图兜底里补出来', () => {
+    const doc = emptyDoc(
+      '<html><body><div><img src="https://img.pddpic.com/a.jpg" width="400"></div></body></html>',
+    );
+    const skip = new Set(['main', 'detail'] as const);
+    expect(collectPddDomAssets(doc, '482319937501', skip)).toEqual([]);
   });
 });
 

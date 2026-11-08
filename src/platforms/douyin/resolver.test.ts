@@ -161,6 +161,18 @@ describe('domSource', () => {
     controller.abort();
     expect(await collect(domSource, makeCtx({ signal: controller.signal }))).toHaveLength(0);
   });
+
+  it('结构化来源已覆盖 main 时，DOM 不再把同一批图补一遍', async () => {
+    const doc = emptyDoc(
+      '<html><body><div class="swiper"><div class="img"><img src="https://p3.douyinpic.com/a~c5_720x720.webp"></div></div><div class="detail"><div class="img"><img src="https://p3.douyinpic.com/d~c5_720x720.webp"></div></div></div></body></html>',
+    );
+    const ctx = makeCtx({ document: doc });
+    Object.assign(ctx, { hasStructured: (kind: string) => kind === 'main' });
+    const drafts = await collect(domSource, ctx);
+    expect(drafts).toHaveLength(1);
+    // 只剩 detail 一类被补进来
+    expect(drafts[0]?.assets?.every((a) => a.kind === 'detail')).toBe(true);
+  });
 });
 
 describe('detectBlocker：APP_ONLY 的两个信号（FINDINGS §1）', () => {

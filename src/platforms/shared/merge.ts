@@ -153,6 +153,20 @@ export class DraftAccumulator {
     return s !== undefined && hasStructured(s);
   }
 
+  /**
+   * 能不能拼出一份快照 —— **不构造、不跑 Zod**。
+   *
+   * 判定条件与 toSnapshot() 返回 null 的分支完全一致（标题、链接、至少一个素材）。
+   * resolver-runner 的 maybeSettle() 每收到一份抓包 draft 都要问一次这个问题；
+   * 旧实现直接调 toSnapshot()，等于每份 draft 都把全部素材复制一遍、
+   * 再跑一次 ProductSnapshot.safeParse。抓包源连吐几十份 draft 时这是纯浪费。
+   */
+  hasSnapshot(base: SnapshotBase): boolean {
+    const title = this.scalars.get('title')?.value ?? base.fallbackTitle?.trim();
+    const url = this.scalars.get('url')?.value ?? base.fallbackUrl;
+    return Boolean(title && url) && this.assets.size > 0;
+  }
+
   get isEmpty(): boolean {
     return !this.scalars.has('title') && this.assets.size === 0 && this.skus === null;
   }

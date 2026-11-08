@@ -37,36 +37,26 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
   const index = opts.index ?? folderIndex();
   const loadRootId = opts.rootId ?? (() => handleStore().rootId());
 
-  /**
-   * 步骤 2：扫根目录下以 `_商品ID` 结尾的文件夹。
-   *
-   * 根目录下可能有几百个商品文件夹，所以只在索引没命中时才扫（§9.3 的取舍说明）。
-   * 用 endsWith 而不是 includes：_123 不能匹配到 _1234 那个商品。
-   */
-  async function scanByIdSuffix(productId: string): Promise<string | null> {
-    const suffix = `_${productId.toLowerCase()}`;
-    let entries: DirEntry[];
-    try {
-      entries = await sink.listDir(ROOT);
-    } catch {
-      // 根目录还没就绪（第一次下载 / 没授权）→ 当作没找到
-      return null;
-    }
-    const matches = entries
-      .filter((e) => e.kind === 'directory' && nameKey(e.name).endsWith(suffix))
-      .sort((a, b) => (b.lastModified ?? 0) - (a.lastModified ?? 0));
-    return matches[0]?.name ?? null;
+  /** 索引里记着的名字是否还真的在盘上（用户可能手动删了它） */
+  function stillOnDisk(entries: DirEntry[] | null, folderName: string): boolean {
+    if (entries === null) return false;
+    return entries.some((e) => e.kind === 'directory' && nameKey(e.name) === nameKey(folderName));
   }
 
-  /** 索引里记着的名字是否还真的在盘上（用户可能手动删了它） */
-  async function stillOnDisk(folderName: string): Promise<boolean> {
-    try {
-      const entries = await sink.listDir(ROOT);
-      return entries.some((e) => e.kind === 'directory' && nameKey(e.name) === nameKey(folderName));
-    } catch {
-      // 根目录读不了 → 当作不在，走后面的重建流程
-      return false;
+  /**
+   * 步骤 2：根目录下以 `_商品ID` 结尾的文件夹里，取最近修改的一个。
+   * 用 endsWith 而不是 includes：_123 不能匹配到 _1234 那个商品。
+   */
+  function findBySuffix(entries: DirEntry[] | null, productId: string): string | null {
+    if (entries === null) return null;
+    const suffix = `_${productId.toLowerCase()}`;
+    let best: DirEntry | null = null;
+    for (const entry of entries) {
+      if (entry.kind !== 'directory') continue;
+      if (!nameKey(entry.name).endsWith(suffix)) continue;
+      if (best === null || (entry.lastModified ?? 0) > (best.lastModified ?? 0)) best = entry;
     }
+    return best?.name ?? null;
   }
 
   const gateway: FsGateway = {
@@ -94,16 +84,36 @@ export function createFsGateway(opts: FsGatewayOptions): FsGateway {
     async resolveProductFolder({ platform, productId, preferredName }) {
       const rootId = await loadRootId().catch(() => null);
 
+      /**
+       * 根目录只在**这次定位内**列一次。
+       *
+       * 旧实现「校验索引里的文件夹还在不在」和「`_ID` 后缀扫描」各调一次
+       * sink.listDir(ROOT)：根目录下几百个商品文件夹时，一次定位要建两遍全部
+       * DirEntry 对象。两次列举之间目录几乎不可能变化，共享一份结果既省时间也省内存。
+       * undefined = 还没列，null = 列失败（没授权 / 根目录不存在）。
+       */
+      let rootEntries: DirEntry[] | null | undefined;
+      const listRoot = async (): Promise<DirEntry[] | null> => {
+        if (rootEntries === undefined) {
+          try {
+            rootEntries = await sink.listDir(ROOT);
+          } catch {
+            rootEntries = null;
+          }
+        }
+        return rootEntries;
+      };
+
       if (rootId !== null) {
         const cached = await index.get(rootId, platform, productId);
-        if (cached && (await stillOnDisk(cached.folderName))) {
+        if (cached && stillOnDisk(await listRoot(), cached.folderName)) {
           // 刷新 lastAt：索引里这个字段就是「最后一次使用」，诊断和清理都靠它
           await index.set(rootId, platform, productId, cached.folderName);
           return { dir: [cached.folderName], folderName: cached.folderName };
         }
       }
 
-      const found = await scanByIdSuffix(productId);
+      const found = findBySuffix(await listRoot(), productId);
       if (found) {
         if (rootId !== null) await index.set(rootId, platform, productId, found);
         return { dir: [found], folderName: found };

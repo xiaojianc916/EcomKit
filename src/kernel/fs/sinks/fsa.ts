@@ -284,6 +284,7 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
       try {
         const dirHandle = await getDir(dir, false);
         const out: DirEntry[] = [];
+        const names = new Set<string>();
         for await (const [name, handle] of iterateEntries(dirHandle)) {
           const entry: DirEntry = {
             name,
@@ -291,7 +292,17 @@ export function createFsaSink(opts: FsaSinkOptions = {}): FsSink {
           };
           // 目录项拿不到 mtime（FSA 没有这个能力），只有文件可以，§9.3 的扫描容错处理
           out.push(entry);
+          names.add(nameKey(name));
         }
+        // 同一次遍历的结果也填进 resolveName 用的名字缓存：引擎先列目录做增量判断，
+        // 紧接着就要 resolveName，不共享的话同一个目录会被完整枚举两遍。
+        const key = dirKey(dir);
+        nameLists.delete(key);
+        if (nameLists.size >= MAX_CACHED_DIRS) {
+          const oldest = nameLists.keys().next();
+          if (!oldest.done) nameLists.delete(oldest.value);
+        }
+        nameLists.set(key, { names, at: Date.now() });
         return out;
       } catch (e) {
         throw fsError(e);

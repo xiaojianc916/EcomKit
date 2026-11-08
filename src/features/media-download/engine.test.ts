@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createFsGateway } from '../../kernel/fs/fs-gateway';
 import { createMemorySink } from '../../kernel/fs/sinks/memory';
+import type { FsGateway, FsSink } from '../../kernel/fs/types';
 import { createJobRecord } from '../../kernel/jobs/progress';
 import { createJobRunner } from '../../kernel/jobs/runner';
 import type { ProductSnapshot } from '../../kernel/model/product';
@@ -475,5 +476,79 @@ describe('media-download engine：取消后续下（§9.11）', () => {
     const all = (await pathsOf(sink)).filter((f) => f.endsWith('.png'));
     expect(all).toHaveLength(3);
     expect(all.some((f) => f.includes('(2)'))).toBe(false);
+  });
+});
+
+describe('media-download engine：目录访问次数（性能边界）', () => {
+  /** 统计目录访问的 sink 包装：真实网络/写入都不变，只多记两笔 */
+  function countingSetup() {
+    const inner = createMemorySink();
+    const listDirs: string[] = [];
+    let existsCalls = 0;
+    const sink: FsSink = {
+      ...inner,
+      async listDir(dir) {
+        listDirs.push(dir.join('/'));
+        return inner.listDir(dir);
+      },
+      async exists(dir, name) {
+        existsCalls += 1;
+        return inner.exists(dir, name);
+      },
+    };
+    const gateway = createFsGateway({ sink });
+    let resolveCalls = 0;
+    const countingGateway: FsGateway = {
+      ...gateway,
+      resolveProductFolder(opts) {
+        resolveCalls += 1;
+        return gateway.resolveProductFolder(opts);
+      },
+    };
+    const runner = createJobRunner({
+      gateway: countingGateway,
+      jobTypes: [mediaDownloadJobType],
+      concurrency: 2,
+      net: fakeNet(),
+      media: {
+        toJpeg: async (b: Blob) => b,
+        sniff: () => ({ ext: 'png', mime: 'image/png', isImage: true, isVideo: false }),
+      } as never,
+    });
+    return {
+      runner,
+      sink,
+      listDirs,
+      existsCalls: () => existsCalls,
+      resolveCalls: () => resolveCalls,
+    };
+  }
+
+  it('同一目录只列一次，增量判断不再逐文件 exists（FSA 每次 exists 是两次 IPC）', async () => {
+    const probe = countingSetup();
+    const payload = payloadOf();
+    await probe.runner.enqueue(
+      createJobRecord({ id: 'j1', type: 'media-download', dedupeKey: 'k', payload }),
+      payload,
+    );
+    await probe.runner.idle();
+
+    expect(probe.existsCalls()).toBe(0);
+    // 主图目录 2 张、详情图目录 1 张：每个目录只列一次
+    expect(probe.listDirs.filter((d) => d.endsWith('/主图'))).toHaveLength(1);
+    expect(probe.listDirs.filter((d) => d.endsWith('/详情图'))).toHaveLength(1);
+    const files = await pathsOf(probe.sink);
+    expect(files.filter((f) => f.endsWith('.png'))).toHaveLength(3);
+  });
+
+  it('商品文件夹只定位一次：plan 复用 extra 的结果，不再白列一遍根目录', async () => {
+    const probe = countingSetup();
+    const payload = payloadOf();
+    await probe.runner.enqueue(
+      createJobRecord({ id: 'j1', type: 'media-download', dedupeKey: 'k', payload }),
+      payload,
+    );
+    await probe.runner.idle();
+    expect(probe.resolveCalls()).toBe(1);
   });
 });

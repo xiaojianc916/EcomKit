@@ -39,6 +39,14 @@ interface RuleMatcher {
 }
 
 const RING_SIZE = 60;
+/**
+ * 环形缓冲的原始文本总量上限（UTF-16 码元，约 16MB）。
+ *
+ * 只按条数限制（60 条 × 单条 3MB = 180MB）在数据重的商品页上会直接把页面内存打满，
+ * 而其中绝大多数响应根本不是当前商品的详情。超限丢最旧的 ——
+ * 详情响应通常是最新到的那条，会被保留。
+ */
+const RING_MAX_CHARS = 8_000_000;
 const DEFAULT_MAX_BYTES = 3 * 1024 * 1024;
 
 export default defineContentScript({
@@ -58,6 +66,18 @@ export default defineContentScript({
 });
 
 /**
+ * MAIN 侧的环形缓冲。
+ * messages 与 details 一一对应；details 是已序列化的 detail 字符串，
+ * 回放时直接派发（避免对同一批抓包再 stringify 一遍）。
+ */
+interface RingBuffer {
+  messages: BridgeCaptureMessage[];
+  details: string[];
+  /** messages 里 json 文本的字符总量，用于总量上限 */
+  chars: number;
+}
+
+/**
  * 启动顺序（修正后）：
  *   1. document_start：MAIN 生成前缀写到 <html data-ecbox-c>，交给稍后启动的 ISOLATED；
  *   2. 同一时刻按当前 URL 从平台清单取出抓取规则，**立刻**包装 fetch/XHR —— 商品详情接口
@@ -67,9 +87,7 @@ export default defineContentScript({
 function bootstrap(): void {
   const prefix = publishBridgePrefix(document);
 
-  const ring: BridgeCaptureMessage[] = [];
-  /** 与 ring 一一对应的已序列化 detail，回放时直接派发（避免每条都重新 stringify） */
-  const ringDetail: string[] = [];
+  const ring: RingBuffer = { messages: [], details: [], chars: 0 };
   const matchers: RuleMatcher[] = [];
 
   const emit = (name: string, payload: unknown) => {
@@ -90,7 +108,7 @@ function bootstrap(): void {
     if (tapInstalled || matchers.length === 0) return;
     tapInstalled = true;
     // ringDetail 与 ring 同步维护：抓到时就序列化一次，回放直接派发
-    installNetworkTap(prefix, matchers, ring, ringDetail);
+    installNetworkTap(prefix, matchers, ring);
     protectNativeToString(fetchSource);
   };
 
@@ -108,9 +126,9 @@ function bootstrap(): void {
       ensureTap();
       const wanted = new Set(hello.ruleIds ?? []);
       const captureEvent = bridgeEvent.capture(prefix);
-      for (let i = 0; i < ring.length; i += 1) {
-        const msg = ring[i];
-        const detail = ringDetail[i];
+      for (let i = 0; i < ring.messages.length; i += 1) {
+        const msg = ring.messages[i];
+        const detail = ring.details[i];
         if (msg === undefined || detail === undefined) continue;
         // 回放用已序列化的 detail，避免对同一批抓包再 stringify 一遍（几 MB × 60 条）
         if (wanted.size === 0 || wanted.has(msg.ruleId)) {
@@ -197,21 +215,23 @@ function nativeSourceOf(fn: unknown, fallback: string): string {
  * 关键约束：**永远返回原始值**，克隆失败就当没发生过。
  * matchers 是可变数组：hello 追加的规则对已经装好的包装立即生效。
  */
-function installNetworkTap(
-  prefix: string,
-  matchers: RuleMatcher[],
-  ring: BridgeCaptureMessage[],
-  ringDetail: string[],
-): void {
+function installNetworkTap(prefix: string, matchers: RuleMatcher[], ring: RingBuffer): void {
   /** 环形缓冲里存的是**已序列化好的 detail 字符串**，回放时直接派发，不用再 stringify 一遍 */
   const pushCapture = (ruleId: string, url: string, text: string, at: number, dropped = false) => {
     const msg: BridgeCaptureMessage = { ruleId, url, json: dropped ? null : text, at };
     if (dropped) msg.dropped = true;
     const detail = JSON.stringify(msg);
-    ring.push(msg);
-    if (ring.length > RING_SIZE) ring.shift();
-    ringDetail.push(detail);
-    if (ringDetail.length > RING_SIZE) ringDetail.shift();
+    ring.messages.push(msg);
+    ring.details.push(detail);
+    ring.chars += dropped ? 0 : text.length;
+    while (
+      ring.messages.length > 0 &&
+      (ring.messages.length > RING_SIZE || ring.chars > RING_MAX_CHARS)
+    ) {
+      const evicted = ring.messages.shift();
+      ring.details.shift();
+      ring.chars -= evicted?.json?.length ?? 0;
+    }
     document.dispatchEvent(new CustomEvent(bridgeEvent.capture(prefix), { detail }));
   };
 
@@ -235,6 +255,17 @@ function installNetworkTap(
     }
   };
 
+  /** 便宜的 JSON 形态判断：跳过前导空白看第一个有效字符，不复制字符串、不 parse */
+  const looksLikeJson = (text: string): boolean => {
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text.charCodeAt(i);
+      // 空格 / \t / \n / \r
+      if (c === 32 || c === 9 || c === 10 || c === 13) continue;
+      return c === 0x7b || c === 0x5b; // { 或 [
+    }
+    return false;
+  };
+
   const handleJsonText = (url: string, text: string) => {
     const hit = matchRule(url);
     if (!hit) return;
@@ -243,12 +274,15 @@ function installNetworkTap(
       pushCapture(hit.rule.id, url, '', Date.now(), true);
       return;
     }
-    // 只接受 JSON：先确认能 parse，避免把 HTML 错误页当数据
-    try {
-      JSON.parse(text);
-    } catch {
-      return;
-    }
+    /**
+     * **刻意不在这里 JSON.parse 验证**。
+     *
+     * 解析的最终目的地是 ISOLATED 世界（bridge-client 的 onCapture 必须 parse 出对象），
+     * 在这里再验证一次等于把同一份几 MB 的 JSON 在**同一个主线程**上 parse 两遍
+     * （实测 2MB JSON 单次约 10~20ms）。解析失败由 ISOLATED 侧 try/catch 丢弃，
+     * 不会污染任何状态；fetch 路径已经用 content-type 挡掉了 HTML 错误页，
+     * XHR 路径在下面按 content-type 过滤，行为与「先 parse 再判断」等价。
+     */
     pushCapture(hit.rule.id, url, text, Date.now());
   };
 
@@ -337,8 +371,18 @@ function installNetworkTap(
               const rt = this.responseType;
               // 只处理 ''、'text'、'json'；binary 一律忽略（§7.4 表格）
               if (rt === '' || rt === 'text') {
-                handleJsonText(url, this.responseText);
+                const text = this.responseText;
+                /**
+                 * 便宜的形态筛选，代替原来的 JSON.parse 验证：
+                 * content-type 声明 JSON，或正文第一个有效字符是 { / [。
+                 * 真正解析在 ISOLATED 侧只做一次（见 handleJsonText 的说明）。
+                 */
+                const contentType = (this.getResponseHeader('content-type') ?? '').toLowerCase();
+                if (contentType.includes('json') || looksLikeJson(text)) {
+                  handleJsonText(url, text);
+                }
               } else if (rt === 'json') {
+                // 浏览器已经按 JSON 解析过（parse 失败时是 null），不需要再判形态
                 const text = JSON.stringify(this.response);
                 if (text) handleJsonText(url, text);
               }

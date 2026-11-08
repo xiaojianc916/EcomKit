@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractAssignedObject, readInlineGlobal } from './inline-ssr';
+import { clearInlineGlobalCache, extractAssignedObject, readInlineGlobal } from './inline-ssr';
 
 function docFrom(html: string): Document {
   return new DOMParser().parseFromString(html, 'text/html');
@@ -78,5 +78,40 @@ describe('readInlineGlobal', () => {
 
   it('没有任何脚本时返回 undefined', () => {
     expect(readInlineGlobal(docFrom('<html><body></body></html>'), 'rawData')).toBeUndefined();
+  });
+});
+
+describe('内联 SSR 解析缓存', () => {
+  it('同一份文档、同一个名字只解析一次（返回同一对象引用）', () => {
+    const doc = docFrom(
+      '<html><head><script>window.rawData={"store":{"initDataObj":{"goods":{"goodsName":"t"}}}};</script></head></html>',
+    );
+    const first = readInlineGlobal(doc, 'rawData');
+    const second = readInlineGlobal(doc, 'rawData');
+    expect(second).toBe(first);
+  });
+
+  it('新增内联脚本会让缓存自动失效（SPA 注入 SSR 数据的常见形态）', () => {
+    const doc = docFrom('<html><body></body></html>');
+    expect(readInlineGlobal(doc, 'rawData')).toBeUndefined();
+
+    const script = doc.createElement('script');
+    script.textContent = 'window.rawData={"a":1};';
+    doc.body.appendChild(script);
+
+    expect(readInlineGlobal(doc, 'rawData')).toEqual({ a: 1 });
+  });
+
+  it('clearInlineGlobalCache 能作废「脚本数量不变、内容被原地改写」的缓存', () => {
+    const doc = docFrom('<html><body><script>window.rawData={"a":1};</script></body></html>');
+    expect(readInlineGlobal(doc, 'rawData')).toEqual({ a: 1 });
+
+    const script = doc.querySelector('script');
+    if (script !== null) script.textContent = 'window.rawData={"a":2};';
+    // 脚本数量没变：只有显式作废（换商品）才能看到新内容
+    expect(readInlineGlobal(doc, 'rawData')).toEqual({ a: 1 });
+
+    clearInlineGlobalCache(doc);
+    expect(readInlineGlobal(doc, 'rawData')).toEqual({ a: 2 });
   });
 });

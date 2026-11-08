@@ -67,6 +67,8 @@ export async function resolveSnapshot(input: ResolveInput): Promise<ResolveResul
     else deadline.signal.addEventListener('abort', () => resolve(ABORTED), { once: true });
   });
 
+  const acc = new DraftAccumulator();
+
   const ctx: ResolveContext = {
     url,
     productId,
@@ -77,6 +79,7 @@ export async function resolveSnapshot(input: ResolveInput): Promise<ResolveResul
       debug: (m, d) => log.debug(m, d),
       info: (m, d) => log.info(m, d),
     },
+    hasStructured: (kind) => acc.hasStructuredKind(kind),
     readGlobal: async (path: string) => {
       // 快路径：SSR 数据是内联 <script> 里的 JSON，ISOLATED 直接读文本即可，0 等待
       const inline = readInlineSsr(doc, path);
@@ -89,7 +92,6 @@ export async function resolveSnapshot(input: ResolveInput): Promise<ResolveResul
       input.captures ? input.captures(ruleId, deadline.signal) : emptyStream(),
   };
 
-  const acc = new DraftAccumulator();
   const finishedSources = new Set<string>();
   const producedSources = new Set<string>();
 
@@ -113,7 +115,8 @@ export async function resolveSnapshot(input: ResolveInput): Promise<ResolveResul
     if (settleTimer !== null || deadline.signal.aborted) return;
     const pending = resolver.sources.filter((s) => !finishedSources.has(s.id));
     if (pending.length === 0 || !pending.every((s) => s.id === 'capture')) return;
-    if (acc.toSnapshot(base) === null) return;
+    // 只判「能不能出快照」，不真的构造（toSnapshot 会把素材全复制一遍再跑 Zod）
+    if (!acc.hasSnapshot(base)) return;
     settleTimer = setTimeout(() => deadline.abort(), CAPTURE_SETTLE_MS);
   };
 

@@ -185,15 +185,58 @@ describe('createDownloadsSink（§9.13）', () => {
     create.mockRestore();
   });
 
-  it('exists 查下载记录时用大小写不敏感的正则（Windows 下载目录不区分大小写）', async () => {
+  it('exists 查下载记录时用大小写不敏感、分隔符无关的正则', async () => {
     const downloads = fakeDownloads();
     const search = vi.fn(async () => [] as chrome.downloads.DownloadItem[]);
     downloads.search = search;
     const sink = createDownloadsSink({ downloads });
     expect(await sink.exists(['拼多多'], 'Main.JPG')).toBeNull();
+    // Windows 的下载记录是反斜杠绝对路径，正则必须同时接受 / 和 \
     expect(search).toHaveBeenCalledWith(
-      expect.objectContaining({ filenameRegex: '(?i)电商素材/拼多多/Main\\.JPG' }),
+      expect.objectContaining({ filenameRegex: '(?i)电商素材[\\\\/]拼多多[\\\\/]Main\\.JPG' }),
     );
+  });
+
+  it('目录里只要有一个文件触发过搜索，其余文件就直接命中内存树（不再逐个查下载记录）', async () => {
+    const downloads = fakeDownloads();
+    const search = vi.fn(async (query: chrome.downloads.DownloadQuery) => {
+      if (query.id !== undefined) return [];
+      return [
+        {
+          id: 1,
+          filename: 'C:\\Users\\me\\Downloads\\电商素材\\拼多多\\Main.JPG',
+          fileSize: 2048,
+          totalBytes: 2048,
+        } as chrome.downloads.DownloadItem,
+      ];
+    });
+    downloads.search = search;
+    const sink = createDownloadsSink({ downloads });
+
+    expect(await sink.exists(['拼多多'], 'Main.JPG')).toBe(2048);
+    expect(await sink.exists(['拼多多'], 'MAIN.jpg')).toBe(2048);
+    // 一次目录预热就够：绝对路径被换算成相对路径，两次查询都命中内存树
+    expect(search).toHaveBeenCalledOnce();
+  });
+
+  it('listDir 会合并 chrome.downloads 里没有记录的文件（老版本下载的不会重下副本）', async () => {
+    const downloads = fakeDownloads();
+    downloads.search = vi.fn(async (query: chrome.downloads.DownloadQuery) => {
+      if (query.id !== undefined) return [];
+      return [
+        {
+          id: 1,
+          filename: 'C:\\Users\\me\\Downloads\\电商素材\\拼多多\\主图\\主图01.jpg',
+          fileSize: 10,
+          totalBytes: 10,
+        } as chrome.downloads.DownloadItem,
+      ];
+    });
+    const sink = createDownloadsSink({ downloads });
+    const entries = await sink.listDir(['拼多多', '主图']);
+    expect(entries).toContainEqual({ name: '主图01.jpg', kind: 'file' });
+    // 已经并进内存树，下一次 resolveName 会让开
+    expect(await sink.resolveName(['拼多多', '主图'], '主图01', 'jpg')).toBe('主图01 (2).jpg');
   });
 
   it('状态变化时合并写 IndexedDB（500ms 节流）', async () => {

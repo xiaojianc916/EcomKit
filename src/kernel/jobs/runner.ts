@@ -470,13 +470,6 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   // ---------- 任务生命周期 ----------
 
   async function startJob(job: RunningJob): Promise<void> {
-    const planCtx: PlanContext = {
-      signal: job.controller.signal,
-      log: log.scope(job.def.type),
-      settings: {},
-      fs: gateway,
-    };
-
     if (job.def.extra) {
       try {
         job.extra = await job.def.extra(job.payload, { fs: gateway, log });
@@ -485,6 +478,15 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         log.warn('准备任务上下文失败', { jobId: job.record.id, code: EcError.from(e).code });
       }
     }
+
+    const planCtx: PlanContext = {
+      signal: job.controller.signal,
+      log: log.scope(job.def.type),
+      settings: {},
+      fs: gateway,
+      // plan 复用 extra 里已经定位好的上下文（例如商品文件夹），不要重复定位
+      extra: job.extra,
+    };
 
     let items: WorkItem[];
     try {

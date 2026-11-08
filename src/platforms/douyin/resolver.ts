@@ -294,8 +294,17 @@ export const domSource: DataSource = {
     }
     if (ctx.signal.aborted) return;
 
+    // 让出一个宏任务：SSR 源的 await 链在这一拍内落地，hasStructured() 才有意义
+    const yieldTurn = Promise.withResolvers<void>();
+    setTimeout(yieldTurn.resolve, 0);
+    await yieldTurn.promise;
+    if (ctx.signal.aborted) return;
+
     const picked = collectDomImages(doc, DY_DOM_RULES);
-    const assets: Asset[] = [...picked.main, ...picked.detail, ...picked.sku];
+    const assets: Asset[] = [...picked.main, ...picked.detail, ...picked.sku].filter(
+      // 结构化来源已覆盖的类别，合并器会整类丢弃 DOM 结果（§7.3「DOM 只补空」）
+      (asset) => !(ctx.hasStructured?.(asset.kind) ?? false),
+    );
     if (assets.length === 0) return;
 
     const draft: ProductDraft = { source: 'dom', assets };

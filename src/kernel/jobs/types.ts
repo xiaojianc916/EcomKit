@@ -70,6 +70,14 @@ export interface PlanContext {
    * 索引 → `_ID` 后缀扫描 → 新建），否则商家一改标题就会多出一个文件夹。
    */
   fs: FsGateway;
+  /**
+   * JobTypeDef.extra() 准备好的任务上下文，和 run/finalize 拿到的是同一份。
+   *
+   * 为什么 plan 也需要：extra 里的商品文件夹定位结果（root）与 plan 必须完全一致，
+   * 而定位一次要读索引 + 列根目录。旧实现里 extra 和 plan 各定位一次，
+   * 每个任务白列一遍几百个商品文件夹的根目录。
+   */
+  extra?: unknown;
 }
 
 export interface RunContext {

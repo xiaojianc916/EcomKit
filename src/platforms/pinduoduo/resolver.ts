@@ -1,5 +1,5 @@
 import type { ErrorCode } from '../../kernel/errors/codes';
-import type { Asset } from '../../kernel/model/asset';
+import type { Asset, AssetKind } from '../../kernel/model/asset';
 import type { ProductDraft, Sku } from '../../kernel/model/product';
 import { parseExpiry } from '../../kernel/net/expiry';
 import { isAllowedCdnUrl } from '../shared/cdn';
@@ -152,15 +152,22 @@ function hasProductImages(doc: Document): boolean {
 }
 
 function imageWidth(img: Element): number {
-  const attr = Number(img.getAttribute('width') ?? 0);
+  const attrRaw = Number(img.getAttribute('width') ?? 0);
+  const attr = Number.isFinite(attrRaw) ? attrRaw : 0;
   const natural = (img as HTMLImageElement).naturalWidth ?? 0;
+  /**
+   * getBoundingClientRect 会强制一次布局。页面加载中/瀑布流里图片上百张，
+   * 每张都读一次就是一次同步布局 —— 而真实页面里绝大多数 <img> 的 width 属性
+   * 或 naturalWidth 已经能给出结论，只有两者都判不出来时才值得触发布局。
+   */
+  if (attr >= 100 || natural >= 100) return Math.max(attr, natural);
   let rendered = 0;
   try {
     rendered = img.getBoundingClientRect().width;
   } catch {
     rendered = 0;
   }
-  return Math.max(Number.isFinite(attr) ? attr : 0, natural, rendered);
+  return Math.max(attr, natural, rendered);
 }
 
 function pickImgSrc(img: Element): string | undefined {
@@ -251,24 +258,43 @@ export const ssrSource: DataSource = {
       return;
     }
     const draft = draftFromPayload(rawData, ctx, 'ssr');
-    ctx.log.info('SSR：rawData 解析结果', describeDraft(rawData, draft));
+    ctx.log.info('SSR：rawData 解析结果', describeDraft(rawData, draft, ctx.url.href));
     if (draft) yield draft;
   },
 };
 
-/** 诊断摘要：只输出结构和数量，不输出任何字段值（避免把个人信息写进日志） */
-function describeDraft(payload: unknown, draft: ProductDraft | null): Record<string, unknown> {
+/**
+ * 诊断摘要：只输出结构和数量，不输出任何字段值（避免把个人信息写进日志）。
+ *
+ * **深度扫描只在候选路径漏了某一类素材时才跑**：它的价值是告诉我们真实字段叫什么，
+ * 用来补 schema 候选表；一切正常时把整棵 goods（上限 6 万节点，每项都要过 URL
+ * 规范化和 CDN 白名单）扫一遍只为写一条日志，是纯浪费页面主线程。
+ * 需要的时候它和 draftFromPayload 的兜底扫描共用同一份记忆化结果（见 deep-scan.ts）。
+ */
+function describeDraft(
+  payload: unknown,
+  draft: ProductDraft | null,
+  base: string,
+): Record<string, unknown> {
   const roots = findPddRoots(payload);
   const counts: Record<string, number> = {};
-  for (const a of draft?.assets ?? []) counts[a.kind] = (counts[a.kind] ?? 0) + 1;
+  const kinds = new Set<string>();
+  for (const a of draft?.assets ?? []) {
+    counts[a.kind] = (counts[a.kind] ?? 0) + 1;
+    kinds.add(a.kind);
+  }
+  const needsDeepScan = !kinds.has('main') || !kinds.has('detail');
+  // 扫描根和 draftFromPayload 的 SSR 兜底保持一致，这样记忆化缓存能直接命中
+  const scanRoot = roots?.goods ?? firstNonEmpty(payload, ['store.initDataObj']) ?? payload;
   return {
     topKeys: topKeys(payload),
     initDataKeys: topKeys(firstNonEmpty(payload, ['store.initDataObj', 'initDataObj'])),
     goodsKeys: topKeys(roots?.goods),
     hasTitle: draft?.title !== undefined,
     counts,
-    // 深度扫描命中的路径（只有路径名，没有值），用来把真实字段补进 schema 候选表
-    deepScan: deepScanPdd(roots?.goods ?? payload, { cdnHosts: CDN_HOSTS }).paths,
+    ...(needsDeepScan
+      ? { deepScan: deepScanPdd(scanRoot, { cdnHosts: CDN_HOSTS, base }).paths }
+      : {}),
   };
 }
 
@@ -311,11 +337,21 @@ export const domSource: DataSource = {
     }
     if (ctx.signal.aborted) return;
 
+    /**
+     * 先让出一个宏任务：SSR 是内联 JSON，ssrSource 的 await 链在这一拍内就能落地。
+     * 不先让这一拍，hasStructured() 永远看到空累加器，下面的「还需要 DOM 吗」形同虚设。
+     */
+    await sleep(0, ctx.signal);
+    if (ctx.signal.aborted) return;
+
     // 页面是前端渲染时，DOMContentLoaded 那一刻图片可能还没出来：没找到就隔一会儿再找
     const deadline = Date.now() + DOM_POLL_MS;
     let assets: Asset[] = [];
     while (!ctx.signal.aborted) {
-      assets = collectPddDomAssets(doc, ctx.productId);
+      // DOM 只能产出 main / detail / sku；三类都被结构化来源覆盖时，一张都不该补
+      const skip = domSkipSet(ctx);
+      if (skip.size >= 3) return;
+      assets = collectPddDomAssets(doc, ctx.productId, skip);
       if (assets.length > 0 || Date.now() >= deadline) break;
       await sleep(DOM_POLL_INTERVAL_MS, ctx.signal);
     }
@@ -349,16 +385,41 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * 结构化来源已经覆盖、DOM 不必再找的类别。
+ * DOM 只能产出 main / detail / sku，video 不在其中（视频只来自结构化数据）。
+ */
+function domSkipSet(ctx: ResolveContext): Set<AssetKind> {
+  const skip = new Set<AssetKind>();
+  if (!ctx.hasStructured) return skip;
+  for (const kind of ['main', 'detail', 'sku'] as const) {
+    if (ctx.hasStructured(kind)) skip.add(kind);
+  }
+  return skip;
+}
+
 /** 先按类名规则找；拼多多 H5 的类名是编译后的短哈希，规则落空时用「CDN 大图」启发式 */
-export function collectPddDomAssets(doc: Document, productId: string): Asset[] {
+export function collectPddDomAssets(
+  doc: Document,
+  productId: string,
+  skip?: ReadonlySet<AssetKind>,
+): Asset[] {
   const picked = collectDomImages(doc, PDD_DOM_RULES);
   // 每个素材的候选地址同源（同一个 img 派生），判第一个就够了 —— 原来是把所有候选全跑一遍
   const byRules = [...picked.main, ...picked.detail, ...picked.sku].filter((a) => {
+    if (skip?.has(a.kind)) return false;
     const first = a.candidates[0];
     return first !== undefined && isAllowedCdnUrl(first, CDN_HOSTS);
   });
   if (byRules.length > 0) return byRules;
-  return collectLargeCdnImages(doc, productId);
+  /**
+   * 大图兜底只产出 main / detail，而且每个 <img> 都要做 closest + getBoundingClientRect
+   * （强制布局）+ 一次全文档文本遍历找推荐区截断点，是这里最贵的一步。
+   * 两类都被结构化来源覆盖时，扫了也会被合并器整类丢弃 —— 直接跳过。
+   */
+  if (skip?.has('main') && skip?.has('detail')) return [];
+  const large = collectLargeCdnImages(doc, productId);
+  return skip === undefined ? large : large.filter((a) => !skip.has(a.kind));
 }
 
 /** 推荐区的标题文案：这些文字之后的图片都不是本商品的 */

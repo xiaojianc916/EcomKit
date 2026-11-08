@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AssetKind } from '../../kernel/model/asset';
 import { ProductSnapshot } from '../../kernel/model/product';
 import type { PlannerSettings, WritePlan } from './planner';
-import { planDownload } from './planner';
+import { planDownload, planProductFolder } from './planner';
 import { DEFAULT_MEDIA_DOWNLOAD_SETTINGS, type MediaDownloadSettings } from './settings';
 
 /**
@@ -107,6 +107,19 @@ export function planOf(payload: MediaDownloadPayload, now?: number): WritePlan {
   return planDownload({
     snapshot: payload.snapshot,
     selection: payload.selection as never,
+    settings: payload.settings as unknown as PlannerSettings,
+    platformDisplayName: payload.platformDisplayName,
+    ...(now === undefined ? {} : { now }),
+  });
+}
+
+/**
+ * 只算商品文件夹名（引擎定位目录时用）。
+ * 和 planOf().folder 完全同源，但不会生成整份 WorkItem 列表。
+ */
+export function planFolderOf(payload: MediaDownloadPayload, now?: number): string[] {
+  return planProductFolder({
+    snapshot: payload.snapshot,
     settings: payload.settings as unknown as PlannerSettings,
     platformDisplayName: payload.platformDisplayName,
     ...(now === undefined ? {} : { now }),

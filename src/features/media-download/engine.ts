@@ -14,13 +14,16 @@
 import type { z } from 'zod';
 import { EcError } from '../../kernel/errors/ec-error';
 import type { FsGateway } from '../../kernel/fs/types';
+import { createConcurrencyPool } from '../../kernel/jobs/concurrency-pool';
 import type { ItemResult, JobTypeDef, WorkItem } from '../../kernel/jobs/types';
 import { createLogger } from '../../kernel/log/logger';
 import { isConvertibleMime } from '../../kernel/media/convert';
+import { nameKey } from '../../kernel/naming/sanitize';
 import { readHead, SNIFF_BYTES, sniff } from '../../kernel/net/sniff';
 import {
   type MediaDownloadPayload,
   MediaDownloadPayloadSchema,
+  planFolderOf,
   planOf,
   platformDisplayName,
 } from './payload';
@@ -37,15 +40,32 @@ const MIME_EXT: Record<string, string> = {
   'video/mp2t': 'ts',
 };
 
-/** engine 的 extra：整个任务共享的只读上下文（计划根目录） */
+/** engine 的 extra：整个任务共享的上下文（计划根目录 + 目录列举缓存） */
 export interface MediaDownloadExtra {
   payload: MediaDownloadPayload;
   /** 商品文件夹的相对路径 */
   root: string[];
+  /**
+   * 目录列举缓存（见 DirNameIndex）。放在 extra 里而不是模块级：
+   * 它的生命周期必须和任务一致 —— 下一次任务要看到盘上的真实状态，
+   * 不能复用上一次任务的结果（用户可能中途删过文件）。
+   */
+  names: DirNameIndex;
 }
 
 /** extra() 里没有 logger 参数，定位失败时用它兜底记录 */
 const fallbackLog = createLogger('media-download');
+
+/**
+ * WebP / AVIF 转 JPG 的并发上限。
+ *
+ * 一次转码同时持有 ImageBitmap 和 OffscreenCanvas（MAX_CANVAS_PIXELS = 1600 万像素，
+ * 各约 64MB RGBA）。下载并发是 6，如果 6 张长详情图同时转码，峰值就是几百 MB ——
+ * offscreen renderer 会直接被打爆。压到 2 个：网络下载仍然 6 路并行，
+ * 转码只在「拿到底图之后」排队，CPU 饱和时总耗时基本不变，内存峰值却降到 1/3。
+ */
+const CONVERT_CONCURRENCY = 2;
+const convertPool = createConcurrencyPool(CONVERT_CONCURRENCY);
 
 /** 把异常压成一行可读的原因（只进日志，不进 UI） */
 function describeError(e: unknown): string {
@@ -94,6 +114,7 @@ async function streamVideo(
     fs: import('../../kernel/fs/types').FsGateway;
     signal: AbortSignal;
     log: import('../../kernel/log/logger').Logger;
+    names?: DirNameIndex;
   },
 ): Promise<ItemResult> {
   const { head, rest } = await readHead(response.body, SNIFF_BYTES);
@@ -120,6 +141,7 @@ async function streamVideo(
     ctx.signal,
     sourceUrl === undefined ? {} : { sourceUrl },
   );
+  await rememberWritten(ctx.names, dir, written.name);
   ctx.log.debug('视频写入完成', { item: item.itemKey, size: written.size });
   return {
     itemKey: item.itemKey,
@@ -160,16 +182,64 @@ async function resolveFolder(
 }
 
 /**
- * 这个文件是不是已经在盘上了（增量下载的唯一依据）。
+ * 任务级的目录列举缓存：目录 key → 该目录下已存在的文件（nameKey → 真实名字）。
  *
- * 只比名字、不比大小：大小要靠另外一次网络请求才知道，而这里的目标是
- * 「第二次点下载不重下一遍」。真被用户改坏了，删掉再下即可。
+ * 一个任务里同一目录会被问很多次（200 张详情图 = 200 次「这张下过没有」）。
+ * 列一次目录就全部知道，比每个文件逐个探测便宜一个数量级。
  */
-async function alreadyThere(fs: FsGateway, dir: string[], item: WorkItem): Promise<string | null> {
-  // 扩展名由内容决定，只能把可能的类型逐个试一遍；
-  // 图片按「转成 JPG」的默认结果先找 .jpg，找得到就不必再发请求
-  const exts =
-    item.expect === 'video' ? ['mp4', 'ts'] : ['jpg', 'webp', 'png', 'gif', 'avif', 'heic'];
+export type DirNameIndex = Map<string, Promise<Map<string, string> | null>>;
+
+/** 一个素材可能落盘的扩展名：扩展名由内容嗅探决定，只能全部试一遍（§9.8） */
+const IMAGE_EXTS = ['jpg', 'webp', 'png', 'gif', 'avif', 'heic'] as const;
+const VIDEO_EXTS = ['mp4', 'ts'] as const;
+
+/**
+ * 列一次目录（每个目录每个任务只列一次）。
+ *
+ * 先 ensureDir 再 listDir：第一次下载时子目录还不存在，直接列会抛 NotFoundError
+ * （FSA 实现还会顺手清空整个句柄缓存）；建空目录是这次任务本来就要做的事。
+ * 列举失败（权限丢失、句柄失效）返回 null，调用方退回逐文件探测。
+ */
+function listingOf(
+  fs: FsGateway,
+  dir: string[],
+  index: DirNameIndex,
+): Promise<Map<string, string> | null> {
+  const key = dir.join('/').toLowerCase();
+  let pending = index.get(key);
+  if (pending !== undefined) return pending;
+  pending = (async () => {
+    try {
+      await fs.sink.ensureDir(dir as never);
+      const entries = await fs.sink.listDir(dir as never);
+      const names = new Map<string, string>();
+      for (const entry of entries) {
+        if (entry.kind === 'file') names.set(nameKey(entry.name), entry.name);
+      }
+      return names;
+    } catch {
+      return null;
+    }
+  })();
+  index.set(key, pending);
+  return pending;
+}
+
+/** 刚写完的文件要回填进缓存，否则同一批次里后续的同名判定会看漏 */
+async function rememberWritten(
+  index: DirNameIndex | undefined,
+  dir: string[],
+  name: string,
+): Promise<void> {
+  const pending = index?.get(dir.join('/').toLowerCase());
+  if (pending === undefined) return;
+  const names = await pending.catch(() => null);
+  names?.set(nameKey(name), name);
+}
+
+/** 逐文件探测（列目录不可用时的兜底，行为和旧实现一致） */
+async function probeExisting(fs: FsGateway, dir: string[], item: WorkItem): Promise<string | null> {
+  const exts = item.expect === 'video' ? VIDEO_EXTS : IMAGE_EXTS;
   for (const ext of exts) {
     const name = `${item.stem}.${ext}`;
     try {
@@ -178,6 +248,33 @@ async function alreadyThere(fs: FsGateway, dir: string[], item: WorkItem): Promi
     } catch {
       // 判断不了存在性就老实重下
     }
+  }
+  return null;
+}
+
+/**
+ * 这个文件是不是已经在盘上了（增量下载的唯一依据）。
+ *
+ * 只比名字、不比大小：大小要靠另外一次网络请求才知道，而这里的目标是
+ * 「第二次点下载不重下一遍」。真被用户改坏了，删掉再下即可。
+ *
+ * 旧实现对每个候选扩展名各调一次 fs.exists：图片最多 6 次，FSA 模式下每次
+ * exists = getFileHandle + getFile 两次异步 IPC。一个 200 张图的任务在全新目录上
+ * 要发 1200 次探测。改成「每个目录列一次，之后全在 Map 里查」后是 2 次。
+ */
+async function alreadyThere(
+  fs: FsGateway,
+  dir: string[],
+  item: WorkItem,
+  index: DirNameIndex | undefined,
+): Promise<string | null> {
+  if (index === undefined) return probeExisting(fs, dir, item);
+  const names = await listingOf(fs, dir, index);
+  if (names === null) return probeExisting(fs, dir, item);
+  const exts = item.expect === 'video' ? VIDEO_EXTS : IMAGE_EXTS;
+  for (const ext of exts) {
+    const actual = names.get(nameKey(`${item.stem}.${ext}`));
+    if (actual !== undefined) return [...dir, actual].join('/');
   }
   return null;
 }
@@ -193,9 +290,10 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
 
   /** 商品文件夹必须和 plan 用**同一套定位**，否则图片会被写进两个文件夹 */
   async extra(p, { fs }): Promise<MediaDownloadExtra> {
-    const template = planOf(p).folder;
+    // 只渲染文件夹名，不生成整份计划（plan() 里还会真正算一次）
+    const template = planFolderOf(p);
     const root = (await resolveFolder(p, template, { fs, log: fallbackLog })) ?? template;
-    return { payload: p, root: [...root] };
+    return { payload: p, root: [...root], names: new Map() };
   },
 
   async plan(p, ctx) {
@@ -205,16 +303,20 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
      * 索引 → 同根目录下扫 `_商品ID` 后缀 → 都没有才按模板新建。
      *
      * 旧实现直接用模板拼出来的 plan.folder 建目录，于是**商家一改标题就会多出一个文件夹**。
+     * 定位一次要读索引 + 列根目录（几百个商品文件夹），所以优先复用 extra() 的结果 ——
+     * 两者本来就是同一次任务、同一个商品，重复定位除了多花时间没有任何收益。
      */
-    const folder = (await resolveFolder(p, plan.folder, ctx)) ?? plan.folder;
+    const prepared = (ctx.extra as MediaDownloadExtra | undefined)?.root;
+    const folder = prepared ?? (await resolveFolder(p, plan.folder, ctx)) ?? plan.folder;
     return plan.items.map((item) => ({ ...item, dir: [...folder, ...item.dir] }));
   },
 
   async run(item, ctx) {
     const dir = itemTargetDir(item);
+    const extra = ctx.extra as MediaDownloadExtra | undefined;
     try {
       // 0. 增量跳过：同名文件已经在盘上就跳过（不写任何侧录文件，见文件头注释）
-      const existing = await alreadyThere(ctx.fs, dir, item);
+      const existing = await alreadyThere(ctx.fs, dir, item, extra?.names);
       if (existing !== null) {
         return { itemKey: item.itemKey, status: 'skipped', bytes: 0, path: existing };
       }
@@ -235,7 +337,10 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
        * 内存占用与文件大小无关（§9.9）。
        */
       if (item.expect === 'video') {
-        return await streamVideo(item, res, dir, ctx);
+        return await streamVideo(item, res, dir, {
+          ...ctx,
+          ...(extra === undefined ? {} : { names: extra.names }),
+        });
       }
 
       const blob = await res.blob();
@@ -269,7 +374,11 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
         (ctx.extra as MediaDownloadExtra | undefined)?.payload.settings.toJpeg !== false;
       if (wantsJpeg && item.expect === 'image' && isConvertibleMime(sniffed.mime)) {
         try {
-          const converted = await ctx.media.toJpeg(blob);
+          // 用有界并发跑：同一时刻最多 CONVERT_CONCURRENCY 张图在解码/编码
+          let converted: Blob = blob;
+          await convertPool.add(async () => {
+            converted = await ctx.media.toJpeg(blob);
+          });
           if (converted && converted.size > 0 && converted !== blob) {
             payload = converted;
             finalExt = 'jpg';
@@ -291,6 +400,7 @@ export const mediaDownloadJobType: JobTypeDef<MediaDownloadPayload, MediaDownloa
         ctx.signal,
         sourceUrl === undefined ? {} : { sourceUrl },
       );
+      await rememberWritten(extra?.names, dir, written.name);
 
       return {
         itemKey: item.itemKey,

@@ -7,25 +7,49 @@
  * 好在 SSR 数据是内联在 HTML 里的 `<script>window.rawData={…}</script>`，
  * ISOLATED world 能直接读 script 的文本，所以用它做一次同步兜底。
  *
- * 只用于**判定**（needLogin / 有没有商品数据），不作为数据源：
- * 解析失败、体积过大、脚本被 CSP 换掉都只会让判定退化成「不阻断」，不影响主流程。
+ * 两个用途：
+ *   1. 同步阻断判定（needLogin / 有没有商品数据）—— 必须是同步的；
+ *   2. 解析时的快路径 —— resolver-runner 先试内联读取，读不到才走 bridge 的
+ *      readGlobal()（跨 world 的 JSON 往返）。常见情况下第 2 条完全省掉一次 IPC。
+ *
+ * 解析失败、体积过大、脚本被 CSP 换掉都只会让调用方退到下一来源，不影响主流程。
  */
 
 /** 单个脚本的解析上限：SSR 数据通常 < 2MB，超过直接放弃，避免卡住页面 */
 const MAX_SCRIPT_CHARS = 3_000_000;
 
 /**
- * 在文档的内联脚本里找 `window.<name> = {…}` 并解析成 JSON。
- * 找不到或解析失败返回 undefined。
+ * 每个 Document 上一次解析结果的缓存。
+ *
+ * 为什么必须缓存：一次页面识别里同一个名字至少要被读两次 ——
+ * PageController 的同步阻断判定一次、SSR 数据源经 readGlobal() 再一次。
+ * 而每次调用的代价是「取出整个内联脚本的 textContent + includes 扫描 +
+ * 括号配平 + JSON.parse」，实测 276KB 的 rawData 单次约 5ms（happy-dom），
+ * 真实商品页常见 1~3MB，就是两次 20~50ms 的页面主线程卡顿。
+ *
+ * 失效条件（两条都要有）：
+ *   · 内联脚本数量变化 —— SPA 切换商品时通常会新插入 SSR 脚本；
+ *   · 调用方显式 clearInlineGlobalCache(doc) —— pushState 换商品也可能原地改写
+ *     window.rawData 而脚本数量不变，这种情况只能由知道「换商品了」的调用方通知。
+ *
+ * 缓存的是**解析后的对象引用**：调用方只读（findPddRoots 本来就用 WeakMap 按对象缓存）。
  */
-export function readInlineGlobal(doc: Document, name: string): unknown {
-  let scripts: HTMLScriptElement[];
-  try {
-    scripts = Array.from(doc.querySelectorAll('script:not([src])'));
-  } catch {
-    return undefined;
-  }
+interface InlineCache {
+  scriptCount: number;
+  values: Map<string, unknown>;
+}
 
+const INLINE_CACHE = new WeakMap<Document, InlineCache>();
+
+function inlineScripts(doc: Document): HTMLScriptElement[] | null {
+  try {
+    return Array.from(doc.querySelectorAll('script:not([src])'));
+  } catch {
+    return null;
+  }
+}
+
+function scanScripts(scripts: readonly HTMLScriptElement[], name: string): unknown {
   for (const script of scripts) {
     const text = script.textContent ?? '';
     if (text === '' || text.length > MAX_SCRIPT_CHARS) continue;
@@ -35,6 +59,31 @@ export function readInlineGlobal(doc: Document, name: string): unknown {
     if (json !== undefined) return json;
   }
   return undefined;
+}
+
+/**
+ * 在文档的内联脚本里找 `window.<name> = {…}` 并解析成 JSON。
+ * 找不到或解析失败返回 undefined。同一份文档 + 同一个名字只解析一次（见 InlineCache）。
+ */
+export function readInlineGlobal(doc: Document, name: string): unknown {
+  const scripts = inlineScripts(doc);
+  if (scripts === null) return undefined;
+
+  let cache = INLINE_CACHE.get(doc);
+  if (cache === undefined || cache.scriptCount !== scripts.length) {
+    cache = { scriptCount: scripts.length, values: new Map() };
+    INLINE_CACHE.set(doc, cache);
+  }
+  if (cache.values.has(name)) return cache.values.get(name);
+
+  const value = scanScripts(scripts, name);
+  cache.values.set(name, value);
+  return value;
+}
+
+/** 丢掉某份文档的缓存（PageController 在识别到新商品时调用，见 InlineCache 的说明） */
+export function clearInlineGlobalCache(doc: Document): void {
+  INLINE_CACHE.delete(doc);
 }
 
 /**

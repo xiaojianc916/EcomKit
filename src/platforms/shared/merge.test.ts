@@ -232,6 +232,24 @@ describe('生成快照', () => {
     expect(acc2.toSnapshot({ ...BASE })).toBeNull();
   });
 
+  it('hasSnapshot 与 toSnapshot 的 null 判定完全一致（它不能构造快照，只能提前回答）', () => {
+    const cases: Array<[ProductDraft[], boolean]> = [
+      [[], false],
+      [[{ source: 'ssr', assets: [img('m1', 0, 'https://img.pddpic.com/m1.jpg')] }], false],
+      [[{ source: 'ssr', title: '有标题没素材' }], false],
+      [
+        [{ source: 'ssr', title: 'T', assets: [img('m1', 0, 'https://img.pddpic.com/m1.jpg')] }],
+        true,
+      ],
+    ];
+    for (const [drafts, expected] of cases) {
+      const acc = new DraftAccumulator();
+      for (const draft of drafts) acc.add(draft);
+      expect(acc.hasSnapshot({ ...BASE })).toBe(expected);
+      expect(acc.toSnapshot({ ...BASE }) !== null).toBe(expected);
+    }
+  });
+
   it('标题缺失时用 fallbackTitle（例如 document.title）', () => {
     const acc = new DraftAccumulator();
     acc.add({ source: 'dom', assets: [img('m1', 0, 'https://img.pddpic.com/m1.jpg')] });

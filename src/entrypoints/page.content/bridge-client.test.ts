@@ -55,4 +55,31 @@ describe('page bridge 握手（MAIN 先发布前缀，ISOLATED 后读取）', ()
     expect(got).toEqual([{ goods: { goodsName: 't' } }]);
     bridge!.dispose();
   });
+
+  it('解析失败的抓包在消费时被跳过，不影响同一条流里的有效数据', async () => {
+    const prefix = publishBridgePrefix(document);
+    document.addEventListener(bridgeEvent.hello(prefix), () => {
+      for (const json of ['{不是合法 JSON', JSON.stringify({ goods: { goodsName: 'ok' } })]) {
+        document.dispatchEvent(
+          new CustomEvent(bridgeEvent.capture(prefix), {
+            detail: JSON.stringify({ ruleId: 'pdd.goods-detail', url: '/x', json, at: 1 }),
+          }),
+        );
+      }
+    });
+    const { createPageBridge } = await freshClient();
+    const bridge = createPageBridge(manifest, 'pdd.goods');
+    expect(bridge).not.toBeNull();
+
+    const ac = new AbortController();
+    const got: unknown[] = [];
+    const loop = (async () => {
+      for await (const p of bridge!.captures('pdd.goods-detail', ac.signal)) got.push(p.json);
+    })();
+    await Promise.resolve();
+    ac.abort();
+    await loop;
+    expect(got).toEqual([{ goods: { goodsName: 'ok' } }]);
+    bridge!.dispose();
+  });
 });

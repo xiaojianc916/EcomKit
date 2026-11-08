@@ -51,7 +51,51 @@ interface Found {
   images: PddRawImage[];
 }
 
+/**
+ * 深度扫描的记忆化。
+ *
+ * 同一个 goods 容器在一次解析里会被问两次：draftFromPayload 在候选路径落空时用它兜底，
+ * 诊断日志（describeDraft）又要它的命中路径；抓包源还会对同一份 json 反复问。
+ * 一次扫描最多 6 万节点、每个数组项都要过 URL 规范化 + CDN 白名单，实测 224KB 的
+ * payload 约 5.7ms —— 在页面主线程上跑两遍纯属浪费。
+ *
+ * 键是 payload 对象本身（WeakMap，payload 被回收时缓存自动消失），
+ * 同一对象下再按 base 区分（相对地址的解析基准不同，结果可能不同）。
+ * 返回的对象是**只读**的：调用方只取字段，绝不修改。
+ */
+const SCAN_CACHE = new WeakMap<object, WeakMap<object, Map<string, PddDeepScanResult>>>();
+
+function scanCacheFor(hosts: readonly string[]): WeakMap<object, Map<string, PddDeepScanResult>> {
+  // hosts 是数组（对象），可以安全地做 WeakMap 的键
+  let byRoot = SCAN_CACHE.get(hosts as object);
+  if (byRoot === undefined) {
+    byRoot = new WeakMap<object, Map<string, PddDeepScanResult>>();
+    SCAN_CACHE.set(hosts as object, byRoot);
+  }
+  return byRoot;
+}
+
 export function deepScanPdd(root: unknown, opts: PddDeepScanOptions): PddDeepScanResult {
+  if (root === null || typeof root !== 'object') {
+    return { main: [], detail: [], videos: [], paths: { detail: [] } };
+  }
+
+  const byRoot = scanCacheFor(opts.cdnHosts);
+  let byBase = byRoot.get(root as object);
+  if (byBase === undefined) {
+    byBase = new Map<string, PddDeepScanResult>();
+    byRoot.set(root as object, byBase);
+  }
+  const baseKey = opts.base ?? '';
+  const cached = byBase.get(baseKey);
+  if (cached !== undefined) return cached;
+
+  const result = deepScanUncached(root, opts);
+  byBase.set(baseKey, result);
+  return result;
+}
+
+function deepScanUncached(root: unknown, opts: PddDeepScanOptions): PddDeepScanResult {
   const result: PddDeepScanResult = { main: [], detail: [], videos: [], paths: { detail: [] } };
   if (root === null || typeof root !== 'object') return result;
 

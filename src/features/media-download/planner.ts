@@ -106,15 +106,14 @@ function itemKeyOf(kind: AssetKind, asset: Asset): string {
 }
 
 /**
- * 生成写入计划。纯函数：同样的输入得到同样的输出（含 items 的先后顺序）。
+ * 只渲染商品文件夹名，不生成 WorkItem。
+ *
+ * 引擎的 extra() 只需要文件夹名来定位目录；旧实现为此跑了一遍完整计划
+ * （几百条 WorkItem 的文件名清洗 + 模板渲染 + 字素截断）然后只取 folder。
  */
-export function planDownload(input: PlanInput): WritePlan {
-  const { snapshot, selection, settings, platformDisplayName, now } = input;
-  const wantsEverything = selection.keys === undefined || selection.keys.length === 0;
-  const keySet = wantsEverything ? null : new Set(selection.keys);
-  const kindSet = new Set<AssetKind>(selection.kinds);
-
-  const productFolder = renderProductFolderName(
+export function planProductFolder(input: Omit<PlanInput, 'selection'>): string[] {
+  const { snapshot, settings, platformDisplayName, now } = input;
+  const name = renderProductFolderName(
     settings.folderTemplate,
     {
       platform: platformDisplayName,
@@ -124,8 +123,19 @@ export function planDownload(input: PlanInput): WritePlan {
     },
     now === undefined ? {} : { now },
   );
+  return [name];
+}
 
-  const folder: string[] = [productFolder];
+/**
+ * 生成写入计划。纯函数：同样的输入得到同样的输出（含 items 的先后顺序）。
+ */
+export function planDownload(input: PlanInput): WritePlan {
+  const { snapshot, selection, settings } = input;
+  const wantsEverything = selection.keys === undefined || selection.keys.length === 0;
+  const keySet = wantsEverything ? null : new Set(selection.keys);
+  const kindSet = new Set<AssetKind>(selection.kinds);
+
+  const folder = planProductFolder(input);
 
   const skuLabels = skuLabelsByImageKey(snapshot.skus);
   const items: WorkItem[] = [];

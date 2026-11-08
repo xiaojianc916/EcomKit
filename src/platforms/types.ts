@@ -1,4 +1,5 @@
 import type { ErrorCode } from '../kernel/errors/codes';
+import type { AssetKind } from '../kernel/model/asset';
 import type { PlatformId, ProductDraft } from '../kernel/model/product';
 
 /**
@@ -70,6 +71,14 @@ export interface ResolveContext {
   /** 包含已缓冲的和之后到达的抓包数据 */
   captures(ruleId: string): AsyncIterable<CapturedPayload>;
   log: { debug(msg: string, data?: unknown): void; info(msg: string, data?: unknown): void };
+  /**
+   * 结构化来源（ssr / capture）是否已经提供了这一类素材。
+   *
+   * DOM 兜底用它跳过昂贵且无意义的扫描：结构化数据已经覆盖的类别，
+   * 合并器本来就会整类丢掉 DOM 结果（§7.3「DOM 只补空」）。
+   * 不传时按「都没提供」处理，行为与旧实现一致。
+   */
+  hasStructured?(kind: AssetKind): boolean;
 }
 
 export interface DataSource {

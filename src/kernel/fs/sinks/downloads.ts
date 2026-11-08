@@ -224,7 +224,44 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
   const rootName = opts.rootName ?? DOWNLOAD_ROOT_NAME;
   const downloads = opts.downloads ?? null;
   const files = new Map<string, number>();
-  for (const [path, size] of opts.initialFiles ?? []) files.set(pathKey(path), size);
+  /**
+   * 目录 → 该目录下的文件名（小写）。resolveName 原本每次都扫全表 files.keys()，
+   * 200 个文件就是 4 万次前缀比较；维护一份目录索引后是 O(1) 查表。
+   */
+  const byDir = new Map<string, Set<string>>();
+
+  /**
+   * 记下一个已落盘路径：fullpath（小写）→ 大小，并同步目录索引。
+   * path 里可能带绝对路径（chrome.downloads 回传的 filename），
+   * 没有 '/' 的形态进不了目录索引 —— 它对应的相对路径会在同一处一起记。
+   */
+  function rememberPath(path: string, size: number): void {
+    const key = pathKey(path);
+    files.set(key, size);
+    const slash = key.lastIndexOf('/');
+    if (slash < 0) return;
+    const dir = key.slice(0, slash + 1);
+    let names = byDir.get(dir);
+    if (names === undefined) {
+      names = new Set<string>();
+      byDir.set(dir, names);
+    }
+    names.add(key.slice(slash + 1));
+  }
+
+  function forgetPath(path: string): void {
+    const key = pathKey(path);
+    files.delete(key);
+    const slash = key.lastIndexOf('/');
+    if (slash < 0) return;
+    const dir = key.slice(0, slash + 1);
+    const names = byDir.get(dir);
+    if (names === undefined) return;
+    names.delete(key.slice(slash + 1));
+    if (names.size === 0) byDir.delete(dir);
+  }
+
+  for (const [path, size] of opts.initialFiles ?? []) rememberPath(path, size);
 
   // 文本文件的内存副本：downloads 模式读不回内容，至少让本会话写过的清单还能读到
   const texts = new Map<string, string>();
@@ -257,6 +294,48 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
     void path;
   }
 
+  /**
+   * 目录预热：chrome.downloads 里可能有本扩展没有记录的文件（老版本下载的、
+   * IndexedDB 被清过的）—— 只靠内存树看不见，就会重下一份「(2)」副本。
+   * 每个目录 3 秒最多搜一次，结果并进内存树；引擎对每个目录只列一次目录，
+   * 所以实际开销是「一个下载任务、每个子目录一次 search」。
+   */
+  const warmedAt = new Map<string, number>();
+  const warmInflight = new Map<string, Promise<void>>();
+  const WARM_TTL_MS = 3000;
+
+  async function warmDir(dir: RelPath): Promise<void> {
+    // 根目录不预热：那等于把几千个商品的下载记录全拉回来
+    if (dir.length === 0) return;
+    const prefix = pathKey(downloadDirPrefix(rootName, dir));
+    const at = warmedAt.get(prefix);
+    if (at !== undefined && Date.now() - at < WARM_TTL_MS) return;
+    const running = warmInflight.get(prefix);
+    if (running !== undefined) return running;
+
+    const task = (async () => {
+      warmedAt.set(prefix, Date.now());
+      try {
+        const items = await api().search({ filenameRegex: filenamePattern(prefix) });
+        const rootKey = `${pathKey(rootName)}/`;
+        for (const item of items) {
+          if (typeof item.filename !== 'string' || item.filename === '') continue;
+          // Windows 的下载记录是反斜杠绝对路径：归一化后从根目录名那一段截出相对路径
+          const normalized = item.filename.replace(/\\/g, '/');
+          const at2 = normalized.toLowerCase().lastIndexOf(rootKey);
+          if (at2 < 0) continue;
+          rememberPath(normalized.slice(at2), item.fileSize ?? item.totalBytes ?? 0);
+        }
+      } catch {
+        // 查不到就按内存树处理：只影响增量判断，不影响下载本身
+      } finally {
+        warmInflight.delete(prefix);
+      }
+    })();
+    warmInflight.set(prefix, task);
+    return task;
+  }
+
   return {
     kind: 'downloads',
 
@@ -284,25 +363,14 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
     /**
      * 有同名文件（内存树 + 下载记录里查）时追加 (2)、(3)…（§9.2）
      *
-     * files 的 key 已经是 pathKey 形式（小写），所以这里的 Set 直接就是 nameKey 集合，
-     * uniqueName 会走 Set 快路径，不用再整份小写一遍。
-     * 一个目录几百个文件时，原来每次都要扫全表 + 每个 key 都 toLowerCase。
+     * byDir 里的名字已经是小写（就是 nameKey 形式），uniqueName 直接查表即可。
+     * 一个目录几百个文件时，原来每次 resolveName 都要扫全表、对每个 key 做前缀比较 ——
+     * 200 个文件就是 4 万次比较，而这条路径每个文件都要走一次（标准的 O(n²)）。
      */
     async resolveName(dir: RelPath, stem: string, ext: string): Promise<string> {
       const prefix = downloadDirPrefix(rootName, dir).toLowerCase();
-      const existing = new Set<string>();
-      for (const key of files.keys()) {
-        if (!key.startsWith(prefix)) continue;
-        const tail = key.slice(prefix.length);
-        if (tail.includes('/')) continue; // 子目录里的文件不算同目录
-        existing.add(tail);
-      }
-      const resolved = uniqueFileName(
-        sanitizeName(stem, { maxLength: NAME_LIMITS.file }),
-        ext,
-        existing,
-      );
-      return resolved;
+      const existing = byDir.get(prefix) ?? new Set<string>();
+      return uniqueFileName(sanitizeName(stem, { maxLength: NAME_LIMITS.file }), ext, existing);
     },
 
     /**
@@ -349,8 +417,8 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
                 : unknownSize
                   ? 0
                   : (data as Blob).size;
-            files.set(pathKey(sourceItem.filename), size);
-            files.set(pathKey(filename), size);
+            rememberPath(sourceItem.filename, size);
+            rememberPath(filename, size);
             schedulePersist();
             return { size, name: fileNameOf(sourceItem.filename) };
           }
@@ -383,8 +451,8 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
         const [item] = await api().search({ id });
         const finalPath = item?.filename ?? filename;
         const size = item?.fileSize ?? item?.totalBytes ?? blob.size;
-        files.set(pathKey(finalPath), size);
-        files.set(pathKey(filename), size);
+        rememberPath(finalPath, size);
+        rememberPath(filename, size);
         schedulePersist();
         return { size, name: fileNameOf(finalPath) };
       } catch (e) {
@@ -422,8 +490,9 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
       );
     },
 
-    /** 目录列表只能从内存树推断：返回直接子项的名字 */
+    /** 目录列表：内存树 + 一次（按 TTL 缓存的）chrome.downloads 搜索 */
     async listDir(dir: RelPath): Promise<DirEntry[]> {
+      await warmDir(dir);
       const prefix = pathKey(downloadDirPrefix(rootName, dir));
       const seen = new Set<string>();
       const out: DirEntry[] = [];
@@ -450,7 +519,7 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
     /** Chrome 不提供删除，只能在内存树里移除，避免下次 resolveName 又让开 */
     async removeFile(dir: RelPath, name: string): Promise<void> {
       const key = pathKey(downloadPathName(rootName, dir, name));
-      files.delete(key);
+      forgetPath(key);
       texts.delete(key);
       schedulePersist();
     },
@@ -460,6 +529,10 @@ export function createDownloadsSink(opts: DownloadsSinkOptions = {}): FsSink {
       const filename = downloadPathName(rootName, dir, name);
       const remembered = files.get(pathKey(filename));
       if (remembered !== undefined) return remembered;
+      // 一次目录搜索可能就能回答（同一个目录里的第一个文件触发，其余全走内存）
+      await warmDir(dir);
+      const afterWarm = files.get(pathKey(filename));
+      if (afterWarm !== undefined) return afterWarm;
       try {
         const items = await api().search({ filenameRegex: filenamePattern(filename), limit: 1 });
         const item = items[0];
@@ -484,7 +557,10 @@ function fileNameOf(path: string): string {
  * 用户实际可能把文件存成 MAIN.JPG，所以整条 pattern 加 (?i)。
  */
 function filenamePattern(text: string): string {
-  return `(?i)${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`;
+  // 先转义正则元字符，再把路径分隔符放宽成「/ 或 \」——
+  // chrome.downloads 在 Windows 上回传的是反斜杠绝对路径，只用 / 匹配会永远查不到。
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return `(?i)${escaped.split('/').join('[\\\\/]')}`;
 }
 
 export { blobToText };
