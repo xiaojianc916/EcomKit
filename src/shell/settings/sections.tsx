@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import {
   DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
@@ -141,6 +142,11 @@ export function SettingsSectionView({
   settings,
   update,
 }: SettingsDraft & { id: SettingsSectionId }) {
+  // 设置视图一打开就预取「素材」组的数据：点分组的那一刻内容已经在了（见 loadMediaSettings）
+  useEffect(() => {
+    void loadMediaSettings().catch(() => {});
+  }, []);
+
   if (settings === null) {
     return <p className="ec-field__hint">正在读取设置…</p>;
   }
@@ -207,42 +213,104 @@ function SaveSection({
   );
 }
 
+/**
+ * 「文件命名」和「素材」两组共用同一份 media-download 设置。
+ *
+ * 关键是**不能每次进分组都重新加载**：`page.load()` 和 storage 读取都是异步的，
+ * 分组挂载时先渲染一帧占位、读完再换成完整的表单，面板高度就会跳两次
+ * （实测 素材组 126px → 546px 在同一帧序列里连跳）。这里把它提到模块作用域：
+ * 设置视图打开时预取一次，两个分组都从这份缓存同步初始化，切换分组只有一次
+ * 「内容本身的长度差」，没有二次跳动。写入也先更新缓存，切过去立刻是最新值。
+ */
+interface MediaSectionProps {
+  value: MediaDownloadSettings;
+  onChange(next: MediaDownloadSettings): void;
+}
+
+interface MediaSettingsState {
+  /** 功能自己提供的设置分组（懒加载） */
+  Section: ComponentType<MediaSectionProps>;
+  /** 当前值，两个分组共用 */
+  value: MediaDownloadSettings;
+}
+
+let mediaState: MediaSettingsState | null = null;
+let mediaStatePromise: Promise<MediaSettingsState> | null = null;
+const mediaStateListeners = new Set<() => void>();
+
+function setMediaState(next: MediaSettingsState): void {
+  mediaState = next;
+  for (const listener of mediaStateListeners) listener();
+}
+
+function subscribeMediaState(listener: () => void): () => void {
+  mediaStateListeners.add(listener);
+  return () => {
+    mediaStateListeners.delete(listener);
+  };
+}
+
+function getMediaState(): MediaSettingsState | null {
+  return mediaState;
+}
+
+function mediaSettingsStore() {
+  return featureSettings({
+    featureId: MEDIA_FEATURE_ID,
+    schema: MediaDownloadSettings,
+    defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
+  });
+}
+
+/** 载入 media-download 的设置分组与当前值；并发调用共用同一个 Promise */
+function loadMediaSettings(): Promise<MediaSettingsState> {
+  if (mediaState !== null) return Promise.resolve(mediaState);
+  mediaStatePromise ??= (async () => {
+    try {
+      const feature = pageFeatures.find((f) => f.manifest.id === MEDIA_FEATURE_ID);
+      if (feature?.page === undefined) throw new Error('media-download 页面模块不存在');
+      const [mod, value] = await Promise.all([feature.page.load(), mediaSettingsStore().get()]);
+      if (mod.default.SettingsSection === undefined) {
+        throw new Error('media-download 没有设置分组');
+      }
+      const next: MediaSettingsState = {
+        Section: mod.default.SettingsSection as ComponentType<MediaSectionProps>,
+        value,
+      };
+      setMediaState(next);
+      return next;
+    } finally {
+      mediaStatePromise = null;
+    }
+  })();
+  return mediaStatePromise;
+}
+
+/** 两个分组都从这里读当前值：挂载时就是完整表单，不会有「占位 → 表单」两帧 */
+function useMediaState(): MediaSettingsState | null {
+  return useSyncExternalStore(subscribeMediaState, getMediaState);
+}
+
 function NamingSection() {
   // 命名设置属于 media-download 功能，存在 feature:media-download 下；
   // 这里是**同一个**模板的读写入口（旧实现是写死的本地 state，用户在设置页改模板
   // 既不落盘也不影响下载，等于一个假的设置项）。
-  const [template, setTemplate] = useState('');
+  const media = useMediaState();
   const templateId = useId();
-  const valid = useMemo(() => templateHasId(template), [template]);
+  const template = media?.value.folderTemplate ?? '';
+  // 值还没读回来时不做校验：否则空串会先闪一条「模板缺少 {id}」再消失
+  const valid = media === null || templateHasId(template);
   const preview = useMemo(() => renderPreview(template), [template]);
 
-  useEffect(() => {
-    let alive = true;
-    void featureSettings({
-      featureId: MEDIA_FEATURE_ID,
-      schema: MediaDownloadSettings,
-      defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
-    })
-      .get()
-      .then((value) => {
-        if (alive) setTemplate(value.folderTemplate);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
-
   const onChange = (next: string): void => {
-    setTemplate(next);
+    if (media === null) return;
+    const value = { ...media.value, folderTemplate: next };
+    // 先更新共享缓存：输入框立刻跟着变，切到「素材」组也看到同一个模板
+    setMediaState({ ...media, value });
     // 非法模板不落盘：模板缺 {id} 时下载会全部退化成模板路径，宁可不保存也不要存个坏值
     if (!templateHasId(next)) return;
-    void featureSettings({
-      featureId: MEDIA_FEATURE_ID,
-      schema: MediaDownloadSettings,
-      defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
-    })
-      .update((current) => ({ ...current, folderTemplate: next }))
+    void mediaSettingsStore()
+      .set(value)
       .catch(() => {});
   };
 
@@ -283,12 +351,7 @@ function NamingSection() {
  * 这些设置项**在界面上根本没有入口**，用户只能接受默认值。
  */
 function MediaSection() {
-  type SectionProps = {
-    value: MediaDownloadSettings;
-    onChange(next: MediaDownloadSettings): void;
-  };
-  const [Section, setSection] = useState<ComponentType<SectionProps> | null>(null);
-  const [value, setValue] = useState<MediaDownloadSettings>(DEFAULT_MEDIA_DOWNLOAD_SETTINGS);
+  const media = useMediaState();
   /**
    * 只在**写盘失败**时给提示。
    *
@@ -299,47 +362,29 @@ function MediaSection() {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    void (async () => {
-      const feature = pageFeatures.find((f) => f.manifest.id === MEDIA_FEATURE_ID);
-      if (!feature?.page) return;
-      const mod = await feature.page.load();
-      if (alive && mod.default.SettingsSection) {
-        setSection(() => mod.default.SettingsSection as ComponentType<SectionProps>);
-      }
-      const current = await featureSettings({
-        featureId: MEDIA_FEATURE_ID,
-        schema: MediaDownloadSettings,
-        defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
-      }).get();
-      if (alive) setValue(current);
-    })().catch((e) => {
-      if (alive) setSaveError(`读取素材设置失败：${describeSettingsError(e)}`);
+    // 预取一般在打开设置视图时就完成了；这里只兜住「用户点得比预取还快」的情况
+    void loadMediaSettings().catch((e) => {
+      setSaveError(`读取素材设置失败：${describeSettingsError(e)}`);
     });
-    return () => {
-      alive = false;
-    };
   }, []);
 
   const onChange = (next: MediaDownloadSettings): void => {
-    setValue(next);
-    void featureSettings({
-      featureId: MEDIA_FEATURE_ID,
-      schema: MediaDownloadSettings,
-      defaults: DEFAULT_MEDIA_DOWNLOAD_SETTINGS,
-    })
+    if (media === null) return;
+    setMediaState({ ...media, value: next });
+    void mediaSettingsStore()
       .set(next)
       .then(() => setSaveError(null))
       .catch((e) => setSaveError(`保存失败：${describeSettingsError(e)}`));
   };
 
+  if (media === null) {
+    return <p className="ec-field__hint">{saveError ?? '正在读取素材设置…'}</p>;
+  }
+
+  const Section = media.Section;
   return (
     <>
-      {Section === null ? (
-        <p className="ec-field__hint">正在读取素材设置…</p>
-      ) : (
-        <Section value={value} onChange={onChange} />
-      )}
+      <Section value={media.value} onChange={onChange} />
       {saveError === null ? null : <p className="ec-field__error">{saveError}</p>}
     </>
   );

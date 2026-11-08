@@ -56,4 +56,21 @@ describe('PanelSettingsView（面板内设置视图）', () => {
     expect(screen.getByText('进入商品页时')).toBeInTheDocument();
     expect(screen.queryByText('保存方式')).toBeNull();
   });
+
+  it('切换分组不重新加载：素材/文件命名第二次进入直接是完整表单', async () => {
+    render(<PanelSettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: '素材' }));
+    expect(await screen.findByText('子文件夹名称')).toBeInTheDocument();
+
+    // 文件命名第一次进入就已经拿到模板：不会先闪一帧「模板缺少 {id}」
+    fireEvent.click(screen.getByRole('tab', { name: '文件命名' }));
+    expect(screen.getByLabelText('商品文件夹模板')).toHaveValue('{platform}_商品ID_{id}');
+    expect(screen.queryByText(/模板缺少/)).toBeNull();
+
+    // 切回素材：数据在共享缓存里，同一次渲染就是完整表单而不是占位文案
+    fireEvent.click(screen.getByRole('tab', { name: '素材' }));
+    expect(screen.getByText('子文件夹名称')).toBeInTheDocument();
+    expect(screen.queryByText('正在读取素材设置…')).toBeNull();
+  });
 });
