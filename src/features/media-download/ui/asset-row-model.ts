@@ -178,6 +178,38 @@ export function previewAssets<T>(assets: readonly T[], max = 4): { shown: T[]; r
 }
 
 /**
+ * 一格缩略图该显示哪张图（§10.3「视频格子显示封面」）。
+ *
+ * 图片素材用 preview；视频的封面是 `video.cover`，不是 preview ——
+ * 旧实现只认 preview，视频格子里 `<img src="…mp4">` 必然加载失败，
+ * 面板上视频行永远是灰色空块。
+ *
+ * 视频优先取 cover：即使旧快照 / 合并路径把 preview 写成了 mp4 直链，
+ * 也不会把视频地址当图片加载。
+ */
+export function thumbSrcOf(asset: Pick<Asset, 'kind' | 'preview' | 'video'>): string | undefined {
+  if (asset.kind === 'video') return asset.video?.cover ?? asset.preview;
+  return asset.preview;
+}
+
+/**
+ * 缩略图要用的地址：图片走 `src`，视频没有封面时退回 `videoSrc`（画首帧）。
+ * 两个都没有时返回空对象，Thumb 显示灰色占位块。
+ */
+export interface ThumbSources {
+  src?: string;
+  videoSrc?: string;
+}
+
+export function thumbSourcesOf(asset: Asset): ThumbSources {
+  const src = thumbSrcOf(asset);
+  if (src !== undefined) return { src };
+  if (asset.kind !== 'video') return {};
+  const video = asset.candidates[0];
+  return video === undefined ? {} : { videoSrc: video };
+}
+
+/**
  * 这一类里被选中的素材数（挑选模式半选判断用）。
  *
  * 单独抽出来是为了能利用「选中集合比这一类素材少」这个事实：AssetList 每行都要算一次，

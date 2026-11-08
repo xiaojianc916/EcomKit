@@ -7,13 +7,37 @@
  *      不注入的话扩展 ID 会随安装路径变化，用户设置和目录授权全部丢失（§14）
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generate } from './gen-registries.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
+
+/**
+ * 构建完成后把产物同步到「加载已解压的扩展程序」指向的目录。
+ *
+ * Chrome 从固定目录读代码，不覆盖它就还是上一次构建的版本 —— 改完刷新页面
+ * 看不到任何变化，很容易误判成「没修好」。目标是纯构建产物目录，先清空再
+ * 全量复制，避免旧的 hash chunk 残留下来。
+ *
+ * 默认 D:\Tools\EcBox（本机日常加载目录）；目录不存在（CI / 别的机器）就跳过。
+ * 需要换位置时用 ECBOX_OUT_DIR 指定（此时即使目录不存在也会创建）。
+ */
+function syncExtensionDir(): void {
+  const explicit = process.env.ECBOX_OUT_DIR;
+  const target = explicit ?? 'D:\\Tools\\EcBox';
+  if (explicit === undefined && !existsSync(target)) {
+    console.log('[build] 未发现扩展加载目录，跳过同步（可用 ECBOX_OUT_DIR 指定）');
+    return;
+  }
+  const built = join(root, '.output', 'chrome-mv3');
+  rmSync(target, { recursive: true, force: true });
+  mkdirSync(target, { recursive: true });
+  cpSync(built, target, { recursive: true });
+  console.log(`[build] 已同步到 ${target}`);
+}
 
 async function main(): Promise<void> {
   // 1. 平台 / 功能的 manifest 汇总（决定 matches、host_permissions、commands）
@@ -40,7 +64,13 @@ async function main(): Promise<void> {
   const bin = join(root, 'node_modules', '.bin', 'wxt');
   const result = spawnSync(bin, ['build'], { cwd: root, stdio: 'inherit', env: process.env });
   if (result.error) throw result.error;
-  if (result.status !== 0) process.exitCode = result.status ?? 1;
+  if (result.status !== 0) {
+    process.exitCode = result.status ?? 1;
+    return;
+  }
+
+  // 4. 构建成功才同步：失败时保留上一次可用的扩展目录
+  syncExtensionDir();
 }
 
 void main();

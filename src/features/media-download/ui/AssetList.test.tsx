@@ -33,6 +33,9 @@ function makeJob(patch: Partial<JobRecord> = {}): JobRecord {
 interface SetupOptions {
   mainCount?: number;
   detailCount?: number;
+  videoCount?: number;
+  /** 视频是否带封面；false 时走「用视频首帧兜底」的路径 */
+  videoCover?: boolean;
   checkedKinds?: ('main' | 'sku' | 'detail' | 'video')[];
   selectedKeys?: string[];
   expandedKind?: 'main' | 'sku' | 'detail' | 'video' | null;
@@ -52,7 +55,24 @@ function renderList(opts: SetupOptions = {}) {
   const detail = Array.from({ length: opts.detailCount ?? 26 }, (_, i) =>
     asset({ key: `detail-${i}`, kind: 'detail', index: i }),
   );
-  const byKind = groupAssetsByKind([...main, ...detail]);
+  const video = Array.from({ length: opts.videoCount ?? 0 }, (_, i) =>
+    asset({
+      key: `video-${i}`,
+      kind: 'video',
+      index: i,
+      // 真实快照里视频没有 preview；封面来自 video.cover，没有封面时由 Thumb 画首帧
+      candidates: [`https://video.pddpic.com/v${i}.mp4`],
+      video:
+        opts.videoCover === false
+          ? { codec: 'h264', container: 'mp4' }
+          : {
+              codec: 'h264',
+              container: 'mp4',
+              cover: `https://img.pddpic.com/cover${i}.jpg`,
+            },
+    }),
+  );
+  const byKind = groupAssetsByKind([...main, ...detail, ...video]);
   const handlers = {
     onToggleCheck: vi.fn(),
     onToggleAll: vi.fn(),
@@ -224,6 +244,22 @@ describe('素材行状态渲染（§10.4 素材行表）', () => {
     expect(within(detailRow).getByText('24/26 · 2 个失败')).toBeInTheDocument();
     fireEvent.click(within(detailRow).getByRole('button', { name: '重试' }));
     expect(handlers.onRetryKind).toHaveBeenCalledWith('detail');
+  });
+
+  it('视频行显示封面缩略图，不把 mp4 直链当图片（§10.3）', () => {
+    renderList({ videoCount: 1 });
+    const videoRow = screen.getByRole('listitem', { name: '视频' });
+    const img = within(videoRow).getByRole('img', { name: '视频1' });
+    expect(img).toHaveAttribute('src', 'https://img.pddpic.com/cover0.jpg');
+  });
+
+  it('平台没给视频封面时用视频首帧兜底，不是灰色空块', () => {
+    renderList({ videoCount: 1, videoCover: false });
+    const videoRow = screen.getByRole('listitem', { name: '视频' });
+    const video = videoRow.querySelector('video');
+    expect(video).not.toBeNull();
+    expect(video?.getAttribute('src')).toBe('https://video.pddpic.com/v0.mp4#t=0.1');
+    expect(within(videoRow).queryByRole('img')).toBeNull();
   });
 
   it('挑选模式：这一行数量变成 3/26，复选框半选', () => {

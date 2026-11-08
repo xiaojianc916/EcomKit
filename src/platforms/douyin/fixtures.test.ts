@@ -160,6 +160,11 @@ describe('douyin fixture：带多编码视频', () => {
     expect(isAllowedCdnUrl(video?.video?.cover ?? '')).toBe(true);
   });
 
+  it('视频的 preview 就是封面，不是 mp4 直链（面板缩略图用）', () => {
+    expect(video?.preview).toBe(video?.video?.cover);
+    expect(video?.preview).not.toBe(video?.candidates[0]);
+  });
+
   it('视频地址在白名单内', () => {
     expect(isAllowedCdnUrl(video?.candidates[0] ?? '')).toBe(true);
   });

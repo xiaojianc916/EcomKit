@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { PortalRoot } from './PortalRoot';
 import { Select } from './Select';
 
 /**
@@ -83,5 +84,44 @@ describe('Select', () => {
     expect(box).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(box);
     expect(box).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('面板（shadow root）里点选项不收起列表、能选中 —— 只认 target 会在真实浏览器里失效', () => {
+    /*
+      真实浏览器里，事件穿过 shadow 边界后 document 上的 listener 拿到的
+      `event.target` 会被重定向成宿主元素（<ecbox-root>），而 `composedPath()`
+      仍是真实链路。旧实现用 `target` + contains 判断「点在不在列表里」，
+      两个 contains 永远为 false → pointerdown 先把列表收掉 → click 到不了选项，
+      表现为「点下拉选项没反应、值不变」。
+      happy-dom 不做重定向，所以这里手动构造 document 视角的事件来锁这条契约。
+    */
+    const onChange = vi.fn();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    // RTL 的 within 只声明了 HTMLElement，实现上就是 querySelectorAll，ShadowRoot 同样适用
+    const inShadow = within(shadow as unknown as HTMLElement);
+    render(
+      <PortalRoot value={shadow}>
+        <Select label="测试" value="a" options={OPTIONS} onChange={onChange} />
+      </PortalRoot>,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: '测试' }));
+    const option = inShadow.getByRole('option', { name: '选项 C' });
+    const list = inShadow.getByRole('listbox');
+
+    const retargeted = new Event('pointerdown', { bubbles: true, composed: true });
+    Object.defineProperty(retargeted, 'target', { value: host });
+    Object.defineProperty(retargeted, 'composedPath', {
+      value: () => [option, list, shadow, host, document.body, document],
+    });
+    act(() => {
+      document.dispatchEvent(retargeted);
+    });
+
+    // 列表没被收起 → 选项还在，点击能回写
+    expect(inShadow.getByRole('listbox')).toBeInTheDocument();
+    fireEvent.click(option);
+    expect(onChange).toHaveBeenCalledWith('c');
   });
 });

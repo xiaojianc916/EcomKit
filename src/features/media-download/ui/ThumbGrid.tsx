@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { Asset, AssetKind } from '../../../kernel/model/asset';
 import { Button, Thumb } from '../../../kernel/ui-kit';
+import { thumbSourcesOf, thumbSrcOf } from './asset-row-model';
 
 /**
  * 缩略图网格（§10.3「缩略图网格」）。
@@ -140,6 +141,8 @@ export const ThumbGrid = memo(function ThumbGrid(props: ThumbGridProps) {
     setHovered(null);
   };
 
+  const hoverSrc = hovered === null ? undefined : thumbSrcOf(hovered);
+
   return (
     <div style={{ padding: '4px 16px 12px', borderTop: '1px solid var(--ec-line)' }}>
       {/* 工具条：已选 3 / 26 · 全选 · 清除（§10.3） */}
@@ -186,7 +189,7 @@ export const ThumbGrid = memo(function ThumbGrid(props: ThumbGridProps) {
             const ordinal = startIndex + i + 1;
             const duration = normalizeDuration(asset.video?.duration);
             const label = labels?.get(asset.key);
-
+            const sources = thumbSourcesOf(asset);
             return (
               // key 用素材 key：它是 planner 的 itemKey 主键，跨渲染稳定。
               // 兜底序号只应对「平台给了重复 key」这种异常数据（否则会整格错位）。
@@ -211,7 +214,7 @@ export const ThumbGrid = memo(function ThumbGrid(props: ThumbGridProps) {
                   }}
                 >
                   <Thumb
-                    {...(asset.preview === undefined ? {} : { src: asset.preview })}
+                    {...sources}
                     alt={`第 ${ordinal} 个素材`}
                     size={CELL}
                     index={serialText(ordinal, assets.length)}
@@ -276,7 +279,7 @@ export const ThumbGrid = memo(function ThumbGrid(props: ThumbGridProps) {
           在面板内部的固定浮层，不用 Tooltip —— 它要显示图片，而且尺寸比文字提示大得多。
           用 decoding="async" + 固定 240px 宽：大图解码不占主线程，面板不会在悬停时卡一下。
         */}
-        {hovered === null || hovered.preview === undefined ? null : (
+        {hovered === null || hoverSrc === undefined ? null : (
           <div
             style={{
               position: 'absolute',
@@ -293,7 +296,7 @@ export const ThumbGrid = memo(function ThumbGrid(props: ThumbGridProps) {
             }}
           >
             <img
-              src={hovered.preview}
+              src={hoverSrc}
               alt=""
               decoding="async"
               style={{ display: 'block', width: PREVIEW_SIZE, height: 'auto', borderRadius: 4 }}

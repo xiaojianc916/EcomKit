@@ -155,6 +155,12 @@ describe('pinduoduo fixture：带视频', () => {
     expect(video?.video?.cover).toBeDefined();
     expect(isAllowedCdnUrl(video?.video?.cover ?? '')).toBe(true);
   });
+
+  it('视频的 preview 就是封面，不是 mp4 直链（面板缩略图用）', () => {
+    const video = (draft.assets ?? []).find((a) => a.kind === 'video');
+    expect(video?.preview).toBe(video?.video?.cover);
+    expect(video?.preview).not.toBe(video?.candidates[0]);
+  });
 });
 
 describe('pinduoduo fixture：白名单外的地址被丢弃', () => {

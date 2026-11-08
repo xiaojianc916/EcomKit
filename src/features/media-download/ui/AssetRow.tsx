@@ -3,7 +3,7 @@ import { memo, useCallback } from 'react';
 import type { Asset, AssetKind } from '../../../kernel/model/asset';
 import { Checkbox, Progress, Thumb } from '../../../kernel/ui-kit';
 import { KIND_LABELS } from '../primary-action-model';
-import { type AssetRowModel, previewAssets, rowTags } from './asset-row-model';
+import { type AssetRowModel, previewAssets, rowTags, thumbSourcesOf } from './asset-row-model';
 
 /**
  * 素材行（§10.3 ④，每行 48px）。
@@ -277,15 +277,18 @@ function ThumbStrip({ kind, label, assets }: { kind: AssetKind; label: string; a
   const { shown, rest } = previewAssets(assets, 4);
   return (
     <span style={{ display: 'flex', alignItems: 'center', gap: 2, pointerEvents: 'none' }}>
-      {shown.map((asset) => (
-        <Thumb
-          key={asset.key}
-          {...(asset.preview === undefined ? {} : { src: asset.preview })}
-          alt={`${label}${asset.index + 1}`}
-          size={32}
-          {...(kind === 'video' && asset.video?.codec === 'h265' ? { corner: 'H.265' } : {})}
-        />
-      ))}
+      {shown.map((asset) => {
+        const sources = thumbSourcesOf(asset);
+        return (
+          <Thumb
+            key={asset.key}
+            {...sources}
+            alt={`${label}${asset.index + 1}`}
+            size={32}
+            {...(kind === 'video' && asset.video?.codec === 'h265' ? { corner: 'H.265' } : {})}
+          />
+        );
+      })}
       {rest > 0 ? (
         <span className="ec-num" style={{ fontSize: 12, color: 'var(--ec-text-3)' }}>
           +{rest}

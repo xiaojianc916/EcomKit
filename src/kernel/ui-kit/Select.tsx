@@ -102,9 +102,14 @@ export function Select({ value, options, onChange, label, id }: SelectProps) {
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target as Node;
-      if (rootRef.current?.contains(target) === true) return;
-      if (listRef.current?.contains(target) === true) return;
+      // 必须走 composedPath，不能用 event.target 判断。
+      // 面板在 shadow root 里，弹层也 portal 到同一个 shadow root ——
+      // 事件穿透 shadow 边界后，document 上看到的 target 会被重定向成 shadow host
+      // （<ecbox-root>），两个 contains() 永远为 false：手指一按下，列表先被收掉，
+      // 后面的 click 到不了选项上。表现就是「点下拉选项没反应、值不变」。
+      const path = event.composedPath();
+      if (rootRef.current !== null && path.includes(rootRef.current)) return;
+      if (listRef.current !== null && path.includes(listRef.current)) return;
       close();
     };
     document.addEventListener('pointerdown', onPointerDown, true);

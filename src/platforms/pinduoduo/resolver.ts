@@ -657,7 +657,10 @@ function withAllowedCandidates(asset: Asset): Asset | null {
     key: asset.key === '' ? assetKeyFromUrl(first) : asset.key,
     candidates,
   };
-  const preview = dedupeAllowed([asset.preview ?? first])[0];
+  // 视频的 preview 不能回退到候选地址：那是 mp4 直链，`<img>` 必然加载失败，
+  // 面板上视频行就永远是灰色空块。视频能当缩略图的只有平台给的封面（§10.3）。
+  const previewSource = asset.preview ?? (asset.kind === 'video' ? asset.video?.cover : first);
+  const preview = previewSource === undefined ? undefined : dedupeAllowed([previewSource])[0];
   if (preview !== undefined) out.preview = preview;
   else delete out.preview;
   return out;

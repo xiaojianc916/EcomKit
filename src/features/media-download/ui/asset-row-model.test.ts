@@ -7,6 +7,8 @@ import {
   previewAssets,
   rowTags,
   selectedCountOf,
+  thumbSourcesOf,
+  thumbSrcOf,
 } from './asset-row-model';
 
 function makeJob(patch: Partial<JobRecord> = {}): JobRecord {
@@ -179,6 +181,82 @@ describe('previewAssets（§10.3 ④ 前 4 张缩略图加 +N）', () => {
 
   it('不超过 4 张时没有剩余', () => {
     expect(previewAssets([1, 2])).toEqual({ shown: [1, 2], rest: 0 });
+  });
+});
+
+describe('thumbSrcOf（§10.3 视频格子显示封面）', () => {
+  const cover = 'https://img.pddpic.com/cover.jpg';
+  const mp4 = 'https://v.pddpic.com/a.mp4';
+
+  it('图片素材用 preview', () => {
+    expect(thumbSrcOf({ kind: 'main', preview: 'https://img.pddpic.com/a.jpg' })).toBe(
+      'https://img.pddpic.com/a.jpg',
+    );
+  });
+
+  it('视频用封面，而不是 preview（旧实现把 mp4 直链当缩略图，永远加载失败）', () => {
+    expect(
+      thumbSrcOf({
+        kind: 'video',
+        preview: mp4,
+        video: { codec: 'h264', container: 'mp4', cover },
+      }),
+    ).toBe(cover);
+  });
+
+  it('视频没有封面时退回 preview（可能是平台给的小图）', () => {
+    expect(
+      thumbSrcOf({
+        kind: 'video',
+        preview: cover,
+        video: { codec: 'h264', container: 'mp4' },
+      }),
+    ).toBe(cover);
+  });
+
+  it('视频既没有封面也没有 preview 时返回 undefined（显示灰色占位）', () => {
+    expect(
+      thumbSrcOf({ kind: 'video', video: { codec: 'h264', container: 'mp4' } }),
+    ).toBeUndefined();
+  });
+});
+
+describe('thumbSourcesOf（视频没有封面时的首帧兜底）', () => {
+  const mp4 = 'https://video.pddpic.com/a.mp4';
+
+  it('有封面时只给 src', () => {
+    expect(
+      thumbSourcesOf({
+        key: 'video-1',
+        kind: 'video',
+        index: 0,
+        candidates: [mp4],
+        video: { codec: 'h264', container: 'mp4', cover: 'https://img.pddpic.com/cover.jpg' },
+      }),
+    ).toEqual({ src: 'https://img.pddpic.com/cover.jpg' });
+  });
+
+  it('没有封面时给 videoSrc（第一个候选地址）', () => {
+    expect(
+      thumbSourcesOf({
+        key: 'video-1',
+        kind: 'video',
+        index: 0,
+        candidates: [mp4],
+        video: { codec: 'h264', container: 'mp4' },
+      }),
+    ).toEqual({ videoSrc: mp4 });
+  });
+
+  it('图片素材没有 preview 时不给兜底（图片没有可画的「首帧」）', () => {
+    expect(
+      thumbSourcesOf({
+        key: 'main-1',
+        kind: 'main',
+        index: 0,
+        candidates: ['https://img.pddpic.com/a.jpg'],
+      }),
+    ).toEqual({});
   });
 });
 
