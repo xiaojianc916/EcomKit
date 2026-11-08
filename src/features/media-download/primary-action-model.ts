@@ -3,7 +3,7 @@ import { errorMessage } from '../../kernel/errors/messages';
 import type { JobRecord } from '../../kernel/jobs/types';
 import type { DirStatus } from '../../kernel/messaging/protocol';
 import type { AssetKind } from '../../kernel/model/asset';
-import { formatBytes, formatCount, formatDuration } from './format';
+import { formatBytes, formatCount } from './format';
 
 /**
  * 主按钮的文案与样式（§10.4「主按钮和附加说明」整张表）。
@@ -147,14 +147,6 @@ export function groupFailureReasons(failed: readonly { code: ErrorCode }[]): str
   return order.map((code) => `${errorMessage(code).title}（${counter.get(code) ?? 0}）`);
 }
 
-function completedMeta(j: JobRecord): string {
-  const parts = [`跳过 ${j.skipped} 个`, formatBytes(j.bytes)];
-  if (j.startedAt !== undefined && j.endedAt !== undefined && j.endedAt >= j.startedAt) {
-    parts.push(`用时 ${formatDuration(j.endedAt - j.startedAt)}`);
-  }
-  return parts.join(' · ');
-}
-
 function progressModel(
   label: string,
   done: number,
@@ -293,7 +285,9 @@ export function primaryActionModel(state: PrimaryActionState): PrimaryActionMode
             action: { kind: 'none' },
             secondary: null,
             progress: null,
-            meta: [completedMeta(currentJob)],
+            // 全部成功时不再列「跳过 0 个 · 体积 · 用时」：没有失败就没有需要解释的东西，
+            // 结果只由按钮上的「已保存 N 个文件」表达。失败态仍保留原因汇总。
+            meta: [],
             metaAction: null,
           };
         }

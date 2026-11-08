@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatCount, formatDuration } from './format';
+import { formatBytes, formatCount } from './format';
 
 describe('formatBytes', () => {
   it('小于 1KB 用字节', () => {
@@ -21,23 +21,6 @@ describe('formatBytes', () => {
 
   it('GB 保留一位小数', () => {
     expect(formatBytes(2.5 * 1024 * 1024 * 1024)).toBe('2.5 GB');
-  });
-});
-
-describe('formatDuration', () => {
-  it('毫秒级给“不到 1 秒”', () => {
-    expect(formatDuration(0)).toBe('0 秒');
-    expect(formatDuration(320)).toBe('不到 1 秒');
-  });
-
-  it('秒级保留一位小数', () => {
-    expect(formatDuration(3200)).toBe('3.2 秒');
-    expect(formatDuration(12_000)).toBe('12 秒');
-  });
-
-  it('超过一分钟用“分 秒”', () => {
-    expect(formatDuration(65_000)).toBe('1 分 5 秒');
-    expect(formatDuration(120_000)).toBe('2 分');
   });
 });
 

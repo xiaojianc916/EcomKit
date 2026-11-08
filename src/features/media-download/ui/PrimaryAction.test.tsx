@@ -158,11 +158,11 @@ describe('PrimaryActionView（§10.4 主按钮渲染）', () => {
   it('附加说明最多两行（模型已经截过，这里确认渲染不炸）', () => {
     render(
       <PrimaryActionView
-        model={model({ meta: ['跳过 0 个', '用时 3.2 秒'] })}
+        model={model({ meta: ['网络不稳定（2）', '图片已失效（1）'] })}
         onAction={vi.fn()}
       />,
     );
-    expect(screen.getByText('跳过 0 个')).toBeInTheDocument();
-    expect(screen.getByText('用时 3.2 秒')).toBeInTheDocument();
+    expect(screen.getByText('网络不稳定（2）')).toBeInTheDocument();
+    expect(screen.getByText('图片已失效（1）')).toBeInTheDocument();
   });
 });

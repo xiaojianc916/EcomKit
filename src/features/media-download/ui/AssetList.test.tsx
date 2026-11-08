@@ -207,26 +207,32 @@ describe('素材行状态渲染（§10.4 素材行表）', () => {
     expect(within(mainRow).queryByRole('button', { name: '下载' })).toBeNull();
   });
 
-  it('下载中：缩略图条换成进度条并显示 12/26', () => {
+  it('下载中：行内不显示进度条，“下载”保留但禁用（进度只在底部总体进度条）', () => {
     const job = makeJob({
       status: 'running',
       byGroup: { detail: { total: 26, done: 12, failed: 0, skipped: 0 } },
     });
-    renderList({ job });
+    const handlers = renderList({ job });
     const detailRow = screen.getByRole('listitem', { name: '详情图' });
-    expect(within(detailRow).getByText('12/26')).toBeInTheDocument();
-    expect(within(detailRow).getByRole('progressbar')).toBeInTheDocument();
+    expect(within(detailRow).queryByRole('progressbar')).toBeNull();
+    expect(within(detailRow).queryByText('12/26')).toBeNull();
+    // 右半部分仍是前 4 张缩略图 + 「+22」
+    expect(within(detailRow).getByText('+22')).toBeInTheDocument();
+    const download = within(detailRow).getByRole('button', { name: '下载' });
+    expect(download).toBeDisabled();
+    fireEvent.click(download);
+    expect(handlers.onDownloadKind).not.toHaveBeenCalled();
   });
 
-  it('完成：显示 ✓ 26', () => {
+  it('完成：显示 ✓ 26，行内“下载”恢复可点', () => {
     const job = makeJob({
       status: 'done',
       byGroup: { detail: { total: 26, done: 26, failed: 0, skipped: 0 } },
     });
     renderList({ job });
-    expect(
-      within(screen.getByRole('listitem', { name: '详情图' })).getByText('✓ 26'),
-    ).toBeInTheDocument();
+    const detailRow = screen.getByRole('listitem', { name: '详情图' });
+    expect(within(detailRow).getByText('✓ 26')).toBeInTheDocument();
+    expect(within(detailRow).getByRole('button', { name: '下载' })).toBeEnabled();
   });
 
   it('部分失败：24/26 · 2 个失败，带“重试”', () => {

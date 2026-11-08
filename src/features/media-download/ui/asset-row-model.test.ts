@@ -58,22 +58,23 @@ describe('assetRowModel（§10.4 素材行表）', () => {
     expect(m.showDownload).toBe(false);
   });
 
-  it('下载中：细进度条加 12/26', () => {
+  it('下载中：行内不显示进度数字，“下载”文案保留但禁用', () => {
     const job = makeJob({
       status: 'running',
       byGroup: { detail: { total: 26, done: 12, failed: 0, skipped: 0 } },
     });
     const m = assetRowModel({ ...base, job });
-    expect(m.status).toEqual({ kind: 'progress', done: 12, total: 26 });
-    expect(m.countText).toBe('12/26');
+    expect(m.status.kind).toBe('busy');
+    expect(m.countText).toBeNull();
+    expect(m.showDownload).toBe(true);
   });
 
-  it('完成的跳过计入进度', () => {
+  it('完成的跳过计入完成数', () => {
     const job = makeJob({
-      status: 'running',
+      status: 'done',
       byGroup: { detail: { total: 26, done: 10, failed: 0, skipped: 2 } },
     });
-    expect(assetRowModel({ ...base, job }).countText).toBe('12/26');
+    expect(assetRowModel({ ...base, job }).countText).toBe('✓ 12');
   });
 
   it('完成：✓ 26', () => {

@@ -13,7 +13,8 @@ import { formatCount } from '../format';
 export type AssetRowStatus =
   | { kind: 'resolving' }
   | { kind: 'ready' }
-  | { kind: 'progress'; done: number; total: number }
+  /** 有下载任务正在进行：行内“下载”保持可见但禁用，暂不显示进度 */
+  | { kind: 'busy' }
   | { kind: 'done'; count: number }
   | { kind: 'partial'; done: number; total: number; failed: number }
   | { kind: 'empty' };
@@ -25,7 +26,8 @@ export interface AssetRowModel {
    *
    * 就绪态返回 null：那一格原来写的是「这一类有几张」，而右边缩略图条的 +N
    * 已经把这件事说清楚了（4 张图 + 「+5」就是 9 张），再放一个数字只是重复。
-   * 只有承载**进度信息**的状态（12/26、24/26 · 2 个失败、✓ 26）才需要数字。
+   * 只有承载**结果信息**的状态（24/26 · 2 个失败、✓ 26、挑选中的 3/26）
+   * 才需要数字；下载中的 12/26 已随行内进度条一起移除，进度只看底部总体进度条。
    */
   countText: string | null;
   /** 右侧是否有行内“下载”文字按钮（§10.3 ④） */
@@ -69,7 +71,7 @@ function failedOf(job: JobRecord | null, kind: AssetKind): number {
  * 素材行的状态。
  *
  * 判定顺序（照 §10.4 素材行表从上到下）：
- * 识别中 → 本类在下载 → 完成/部分失败/跳过 → 有失败项 → 空类别 → 就绪。
+ * 识别中 → 任务进行中（行内无进度）→ 完成/部分失败/跳过 → 有失败项 → 空类别 → 就绪。
  *
  * 为什么“识别中”最优先：那时连数量都不知道，显示任何数字都是错的。
  */
@@ -87,17 +89,11 @@ export function assetRowModel(input: AssetRowStateInput): AssetRowModel {
 
   const group = groupProgress(job, kind);
 
-  // 排队中 / 下载中：缩略图条换成细进度条加 12/26（§10.4）
-  if (job !== null && group !== null && (job.status === 'running' || job.status === 'queued')) {
-    const done = group.done + group.skipped;
-    if (done > 0 || job.status === 'running') {
-      return {
-        status: { kind: 'progress', done, total: group.total },
-        countText: formatCount(done, group.total),
-        showDownload: false,
-        showRetry: false,
-      };
-    }
+  // 排队中 / 下载中：行内不显示进度（数字和细进度条都没有，进度只看底部总体进度条），
+  // 但“下载”文案保持原位、只是禁用 —— 既避免文案消失造成的布局跳动，
+  // 也避免任务进行中再对同一类重复提交。
+  if (job !== null && (job.status === 'running' || job.status === 'queued')) {
+    return { status: { kind: 'busy' }, countText: null, showDownload: true, showRetry: false };
   }
 
   const failed = failedOf(job, kind);

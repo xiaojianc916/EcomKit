@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { JobRecord } from '../../../kernel/jobs/types';
 import type { Asset, AssetKind } from '../../../kernel/model/asset';
 import { type AssetRowProps, areAssetRowModelsEqual, areAssetRowPropsEqual } from './AssetRow';
 import { type AssetRowModel, assetRowModel } from './asset-row-model';
@@ -6,8 +7,9 @@ import { type AssetRowModel, assetRowModel } from './asset-row-model';
 /**
  * 素材行的 memo 比较器（§10.9「进度每 200ms 更新时只有对应的行和主按钮重渲染」）。
  *
- * 这是那条要求能不能成立的**唯一开关**：比较器只要退化成「比 job 引用」，
- * 每 200ms 四次全量重渲染就回来了。所以把「什么该重渲染 / 什么不该」逐条锁在单测里。
+ * 行内进度条移除后，下载中的 200ms 推送不应该让任何素材行重渲染 ——
+ * 比较器只要退化成「比 job 引用」，每 200ms 四次全量重渲染就回来了。
+ * 所以把「什么该重渲染 / 什么不该」逐条锁在单测里。
  */
 
 function asset(key: string, kind: AssetKind = 'detail', index = 0): Asset {
@@ -46,12 +48,20 @@ function props(patch: Partial<AssetRowProps> = {}): AssetRowProps {
   };
 }
 
-function progressModel(done: number, total: number): AssetRowModel {
+function runningJob(done: number): JobRecord {
   return {
-    status: { kind: 'progress', done, total },
-    countText: `${done}/${total}`,
-    showDownload: false,
-    showRetry: false,
+    id: 'j1',
+    type: 'media-download',
+    dedupeKey: 'pdd:1',
+    payload: {},
+    status: 'running',
+    total: 26,
+    done,
+    skipped: 0,
+    bytes: 0,
+    failed: [],
+    byGroup: { detail: { total: 26, done, failed: 0, skipped: 0 } },
+    createdAt: 0,
   };
 }
 
@@ -60,12 +70,16 @@ describe('areAssetRowModelsEqual', () => {
     expect(areAssetRowModelsEqual(model, model)).toBe(true);
   });
 
-  it('内容相同的两个对象算相等（进度条没动就不该重渲染）', () => {
-    expect(areAssetRowModelsEqual(progressModel(3, 10), progressModel(3, 10))).toBe(true);
-  });
-
-  it('进度前进算不等', () => {
-    expect(areAssetRowModelsEqual(progressModel(3, 10), progressModel(4, 10))).toBe(false);
+  it('下载中进度前进不改变行模型，不触发重渲染', () => {
+    const modelAt = (done: number): AssetRowModel =>
+      assetRowModel({
+        kind: 'detail',
+        total: 26,
+        selectedCount: 0,
+        resolving: false,
+        job: runningJob(done),
+      });
+    expect(areAssetRowModelsEqual(modelAt(3), modelAt(4))).toBe(true);
   });
 
   it('状态种类变了算不等', () => {

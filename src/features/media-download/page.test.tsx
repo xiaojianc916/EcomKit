@@ -289,7 +289,7 @@ describe('MediaDownloadPanel 组装（§8.6）', () => {
     // 模拟 bg 推来进度（§8.2 watchJobs）
     act(() => spy.pushJob(makeJob()));
 
-    // 主按钮区和素材行各有一条进度条，这里只看主按钮区那条
+    // 底部主按钮是唯一的进度条，素材行不显示行内进度
     const primaryGroup = screen.getByRole('region', { name: /下载中/ });
     expect(within(primaryGroup).getByRole('progressbar')).toBeInTheDocument();
     fireEvent.click(within(primaryGroup).getByRole('button', { name: '取消' }));

@@ -1,7 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { memo, useCallback } from 'react';
 import type { Asset, AssetKind } from '../../../kernel/model/asset';
-import { Checkbox, Progress, Thumb } from '../../../kernel/ui-kit';
+import { Checkbox, Thumb } from '../../../kernel/ui-kit';
 import { KIND_LABELS } from '../primary-action-model';
 import { type AssetRowModel, previewAssets, rowTags, thumbSourcesOf } from './asset-row-model';
 
@@ -52,8 +52,6 @@ export function areAssetRowModelsEqual(a: AssetRowModel, b: AssetRowModel): bool
   const sb = b.status;
   if (sa.kind !== sb.kind) return false;
   switch (sa.kind) {
-    case 'progress':
-      return sa.done === (sb as typeof sa).done && sa.total === (sb as typeof sa).total;
     case 'partial':
       return (
         sa.done === (sb as typeof sa).done &&
@@ -211,6 +209,8 @@ export const AssetRow = memo(function AssetRow(props: AssetRowProps) {
           type="button"
           className="ec-btn ec-btn--link"
           style={{ position: 'relative', zIndex: 1 }}
+          // 任务进行中保留文案但禁用：文案不消失，也不允许重复提交
+          disabled={model.status.kind === 'busy'}
           onClick={() => onDownloadKind(kind)}
         >
           下载
@@ -228,33 +228,18 @@ interface RowStatusProps {
 }
 
 /**
- * 右半部分（§10.4 素材行）：下载中换成细进度条，识别中是骨架占位，
- * 其余情况是缩略图条 + 「+N」。
+ * 右半部分（§10.4 素材行）：识别中是骨架占位，其余情况是缩略图条 + 「+N」。
  *
- * 三种形态各自独立，所以拆成三个小组件：放在行里只是并排的 if 分支，
- * 每支还会各自展开一层缩略图映射，读起来比在一处写三段条件渲染清楚。
+ * 行内不画任何进度条：下载中的进度只由底部主按钮的总体进度条表达，
+ * 素材行在整段下载里保持缩略图，不再每 200ms 变一次。
  */
 function RowStatus({ kind, label, assets, status }: RowStatusProps) {
   switch (status.kind) {
-    case 'progress':
-      return <ProgressStrip label={label} done={status.done} total={status.total} />;
     case 'resolving':
       return <ThumbSkeleton />;
     default:
       return <ThumbStrip kind={kind} label={label} assets={assets} />;
   }
-}
-
-/** 下载中：细进度条 + 「主图 下载中 3/8」的 aria 文案 */
-function ProgressStrip({ label, done, total }: { label: string; done: number; total: number }) {
-  return (
-    <span style={{ width: 72, flex: 'none', pointerEvents: 'none' }}>
-      <Progress
-        value={total > 0 ? (done / total) * 100 : 0}
-        label={`${label} 下载中 ${done}/${total}`}
-      />
-    </span>
-  );
 }
 
 /** 识别中：四个骨架方块占位，不参与读屏 */

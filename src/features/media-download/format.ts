@@ -25,17 +25,6 @@ export function formatBytes(bytes: number): string {
   return `${oneDecimal(bytes / GB)} GB`;
 }
 
-/** 用时：3.2 秒 / 12 秒 / 1 分 5 秒（§10.4「用时 3.2 秒」） */
-export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '0 秒';
-  if (ms < 1000) return '不到 1 秒';
-  if (ms < 60_000) return `${oneDecimal(ms / 1000)} 秒`;
-  const totalSeconds = Math.round(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return seconds === 0 ? `${minutes} 分` : `${minutes} 分 ${seconds} 秒`;
-}
-
 /** 计数：23/48（§10.4 进度、§10.3 挑选模式 3/26） */
 export function formatCount(done: number, total: number): string {
   return `${done}/${total}`;

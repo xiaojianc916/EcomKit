@@ -196,7 +196,7 @@ describe('§10.4 主按钮第 11 行：下载中', () => {
 });
 
 describe('§10.4 主按钮第 12 行：下载完成', () => {
-  it('显示“已保存 48 个文件”并带跳过/体积/用时', () => {
+  it('显示“已保存 48 个文件”，全部成功时没有附加说明', () => {
     const m = primaryActionModel(
       state({
         job: makeJob({
@@ -210,7 +210,7 @@ describe('§10.4 主按钮第 12 行：下载完成', () => {
     );
     expect(m.label).toBe('已保存 48 个文件');
     expect(m.variant).toBe('neutral');
-    expect(m.meta).toEqual(['跳过 0 个 · 12.4 MB · 用时 3.2 秒']);
+    expect(m.meta).toEqual([]);
   });
 
   it('3 秒后不再显示完成文案，回落到就绪', () => {
