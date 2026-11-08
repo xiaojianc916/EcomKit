@@ -1,3 +1,4 @@
+import { Check } from 'lucide-react';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -340,10 +341,9 @@ function renderBadge(badge: HandleBadge): ReactNode {
     );
   }
   if (badge.kind === 'done') {
+    // 用 svg 而不是字符「✓」：字体里的勾带弯尾巴，和其他图标不是一套形状
     return (
-      <span aria-hidden="true" style={{ ...NUMBER_STYLE, fontSize: 13 }}>
-        ✓
-      </span>
+      <Check size={13} strokeWidth={2} style={{ color: 'var(--ec-text)' }} aria-hidden="true" />
     );
   }
   if (badge.kind === 'attention') {

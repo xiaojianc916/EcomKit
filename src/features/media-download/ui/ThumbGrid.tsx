@@ -1,3 +1,4 @@
+import { Check } from 'lucide-react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { Asset, AssetKind } from '../../../kernel/model/asset';
 import { Button, Thumb } from '../../../kernel/ui-kit';
@@ -229,8 +230,8 @@ export const ThumbGrid = memo(function ThumbGrid(props: ThumbGridProps) {
                       </span>
                     ) : null}
                     {selected ? (
-                      <span className="ec-thumb__corner ec-thumb__corner--left" aria-hidden="true">
-                        ✓
+                      <span className="ec-thumb__selected" aria-hidden="true">
+                        <Check size={12} strokeWidth={2.5} />
                       </span>
                     ) : null}
                   </Thumb>

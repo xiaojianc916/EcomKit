@@ -1,4 +1,4 @@
-import { Copy } from 'lucide-react';
+import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
 import type { ProductSnapshot } from '../kernel/model/product';
 import { IconButton, INLINE_ICON_SIZE, Thumb, Tooltip } from '../kernel/ui-kit';
@@ -45,27 +45,24 @@ export function ProductHeader({ snapshot, onCopy }: ProductHeaderProps) {
       <Thumb {...(preview === undefined ? {} : { src: preview })} alt="商品主图" size={48} />
       <div style={{ flex: 1, minWidth: 0 }}>
         {/*
-          标题最多两行，超出省略；悬停显示全文（§10.3 ②）。
-          这里**不能**再写原生 title：Radix 的提示和浏览器自绘的那条会同时冒出来
-          （原生那条还要等 ~1s），用户看到两个灰框。全文交给 Tooltip，且不延迟。
+          标题最多两行，超出省略（§10.3 ②）。**不做悬停全文提示**：
+          面板贴在商品页上，鼠标扫过标题就弹一层黑框会挡图，用户要的是安静的一屏。
         */}
-        <Tooltip content={snapshot.title} delayDuration={0}>
-          <div
-            style={{
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-              fontSize: 14,
-              fontWeight: 600,
-              lineHeight: '20px',
-              maxHeight: 40,
-              color: 'var(--ec-text)',
-            }}
-          >
-            {snapshot.title}
-          </div>
-        </Tooltip>
+        <div
+          style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            fontSize: 14,
+            fontWeight: 600,
+            lineHeight: '20px',
+            maxHeight: 40,
+            color: 'var(--ec-text)',
+          }}
+        >
+          {snapshot.title}
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
           <span style={{ fontSize: 12, color: 'var(--ec-text-2)' }} className="ec-num">
             ID {snapshot.productId}
@@ -73,9 +70,7 @@ export function ProductHeader({ snapshot, onCopy }: ProductHeaderProps) {
           <Tooltip content={copied ? '已复制' : '复制商品 ID'}>
             <IconButton label="复制商品 ID" className="ec-icon-btn--inline" onClick={copyId}>
               {copied ? (
-                <span style={{ fontSize: 12 }} aria-hidden="true">
-                  ✓
-                </span>
+                <Check size={INLINE_ICON_SIZE} strokeWidth={1.75} aria-hidden="true" />
               ) : (
                 <Copy size={INLINE_ICON_SIZE} strokeWidth={1.75} aria-hidden="true" />
               )}

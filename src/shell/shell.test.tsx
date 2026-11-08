@@ -86,7 +86,8 @@ describe('Handle（§10.2 把手）', () => {
 
   it('完成显示对勾', () => {
     render(<Handle {...base} badge={{ kind: 'done' }} />);
-    expect(screen.getByText('✓')).toBeInTheDocument();
+    // 对勾是 svg（不用字体字符），状态由按钮的可访问名表达
+    expect(screen.getByRole('button', { name: '素材面板：下载完成' })).toBeInTheDocument();
   });
 
   it('需要处理时显示红点（元素存在）', () => {
@@ -202,9 +203,9 @@ describe('Panel（§10.3 布局）', () => {
     renderPanel();
     const title = screen.getByText('夏季新款显瘦连衣裙女小个子法式复古方领泡泡袖碎花裙');
     expect(title).toBeInTheDocument();
-    // 全文提示只走 Radix 的自绘提示框：原生 title 会让悬停同时冒出两个灰框
-    // （浏览器那个还要等 ~1s），这里锁住「不给标题写原生 title」防回归。
+    // 标题不做悬停提示：既没有原生 title，也不是 Radix 的 tooltip 触发器
     expect(title).not.toHaveAttribute('title');
+    expect(title).not.toHaveAttribute('data-state');
     expect(screen.getByText('ID 482319937501')).toBeInTheDocument();
   });
 
@@ -402,10 +403,12 @@ describe('SaveBar 路径处理（§10.5 复制路径）', () => {
 });
 
 describe('ProductHeader（§10.3 ②）', () => {
-  it('标题文字可见，且整块不再带原生 title（悬停只能出一个提示框）', () => {
+  it('标题文字可见，且没有任何悬停提示', () => {
     const { container } = render(<ProductHeader snapshot={snapshot()} onCopy={vi.fn()} />);
-    expect(screen.getByText(snapshot().title)).toBeInTheDocument();
-    // 全文由 <Tooltip>（黑色自绘那个）负责；再写 title 就会多出浏览器原生灰框。
+    const title = screen.getByText(snapshot().title);
+    expect(title).toBeInTheDocument();
+    // 面板贴在商品页上，悬停弹黑框会挡图：标题既不给原生 title，也不挂 Tooltip
     expect(container.querySelector('[title]')).toBeNull();
+    expect(title).not.toHaveAttribute('data-state');
   });
 });

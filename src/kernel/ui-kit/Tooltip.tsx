@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { usePortalTarget } from './PortalRoot';
 
 /**
- * 悬停提示（§10.3：⟩ 的提示“收起到边缘 · Alt+Shift+E”、商品标题悬停看全文、
+ * 悬停提示（§10.3：⟩ 的提示“收起到边缘 · Alt+Shift+E”、
  * 缩略图悬停显示尺寸）。
  *
  * 两个实现要点：
@@ -16,11 +16,6 @@ import { usePortalTarget } from './PortalRoot';
 export interface TooltipProps {
   content: ReactNode;
   children: ReactNode;
-  /**
-   * 悬停多久后出现；默认 300ms。
-   * 标题全文这种「内容已经现成、用户就是要看它」的提示传 0（不要延迟）。
-   */
-  delayDuration?: number;
   side?: 'top' | 'right' | 'bottom' | 'left';
 }
 
@@ -32,11 +27,11 @@ export function TooltipProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function Tooltip({ content, children, delayDuration, side = 'top' }: TooltipProps) {
+export function Tooltip({ content, children, side = 'top' }: TooltipProps) {
   const container = usePortalTarget();
   return (
-    <RadixTooltip.Provider delayDuration={delayDuration ?? 300} skipDelayDuration={0}>
-      <RadixTooltip.Root {...(delayDuration === undefined ? {} : { delayDuration })}>
+    <RadixTooltip.Provider delayDuration={300} skipDelayDuration={0}>
+      <RadixTooltip.Root>
         <RadixTooltip.Trigger asChild>{children}</RadixTooltip.Trigger>
         <RadixTooltip.Portal container={container}>
           <RadixTooltip.Content

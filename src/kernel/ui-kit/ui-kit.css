@@ -187,10 +187,20 @@
   outline-offset: 1px;
 }
 
+/*
+ * 勾号居中靠 flex，而不是让 <svg> 当行内元素：行内 svg 是基线对齐，
+ * 会被外层继承的 line-height 推到底部（实测 16px 框里下坠 2px，看着没居中）。
+ */
 .ec-checkbox__mark {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 10px;
   height: 10px;
+}
+
+.ec-checkbox__mark > svg {
+  display: block;
 }
 
 /* ---------- Progress（细进度条，§10.1「不用转圈的大动画」） ---------- */
@@ -265,6 +275,29 @@
 
 .ec-thumb__corner--right {
   right: 2px;
+}
+
+/*
+ * 选中角标：白勾画在深色圆角底上。
+ * 不用字符「✓」：不同字体的勾带弯尾巴、基线和粗细都不同，小尺寸下看着歪；
+ * svg 勾两条直线 + 圆头，任何机器上都一样正。
+ */
+.ec-thumb__selected {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: rgba(15, 20, 30, 0.55);
+  color: #ffffff;
+}
+
+.ec-thumb__selected > svg {
+  display: block;
 }
 
 /* ---------- Tooltip（Radix，挂在 PortalRoot 里） ---------- */
