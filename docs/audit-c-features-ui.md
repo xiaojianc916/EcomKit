@@ -35,7 +35,7 @@
 | C9 | 一般 | popup 勾选框纯装饰，主按钮永远按「全选」下发 | `PopupApp.tsx:26,101,182` | ✅ 02:35 已修（`download([kind])` 已带 kinds） |
 | C10 | 一般 | 「重试失败项」在 runner 拒绝时静默退化成整单重提 | **WIP 新引入**（HEAD 无 `retryOrResubmit`） | ❌ 仍存在 |
 | C11 | 一般 | 取消后「继续下载」产生 `01 (2).webp` 副本 | `runner.ts:374`（`if (!wasCanceled && job.def.finalize)`） | ✅ 已修 |
-| C12 | 一般 | 「跳过 N 个 / 已存在」永远不显示：`skippedByKind` 从未传入 | `AssetList.tsx:27,89` | ✅ 已修 |
+| C12 | 一般 | 「跳过 N 个 / 已存在」永远不显示：`skippedByKind` 从未传入 | `AssetList.tsx:27,89` | ✅ 已修 → 后按产品要求整条文案删除（只留 `✓ N`） |
 | C13 | 一般 | SPA 切商品后仍显示上一个商品的进度/失败 | `controller.ts:81,191-200` | ✅ 02:35 已修（重置块加了 `job = null`） |
 | C14 | 一般 | 失败列表逐项「重试」与「重试全部」行为完全相同 | `FailureList.tsx:99`、`page.tsx:331-336` | ❌ 仍存在 |
 | C15 | 一般 | 复制完整路径依赖 `rootPath`，为空时无任何引导 | `SaveBar.tsx:35-39` | ❌ 仍存在 |
@@ -393,7 +393,8 @@ git show HEAD:src/features/media-download/page.tsx | Select-String 'skippedByKin
 ```
 
 **影响**：重复下载时每行只显示「✓ 26」，不显示「已存在」，用户无法区分「这次下的」和「上次就在的」。
-**修复现状**：`page.tsx` 从 `sync.job.byGroup[kind]?.skipped` 算出来传入。
+**修复现状**：~~`page.tsx` 从 `sync.job.byGroup[kind]?.skipped` 算出来传入。~~
+**后续（产品决定）**：这条文案已整体删除 —— 完成态一律只显示 `✓ N`，`skippedByKind` / `AssetRowStatus.kind = 'skipped'` 一并移除，不要再加回来。
 
 ---
 

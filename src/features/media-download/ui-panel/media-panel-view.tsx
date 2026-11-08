@@ -21,7 +21,6 @@ import type { MediaActions } from './use-media-actions';
  */
 export interface MediaPanelViewProps {
   byKind: Record<AssetKind, Asset[]>;
-  skippedByKind: Partial<Record<AssetKind, number>>;
   checkedKinds: ReadonlySet<AssetKind>;
   selectedKeys: ReadonlySet<string>;
   expandedKind: AssetKind | null;
@@ -56,7 +55,6 @@ export interface MediaPanelViewProps {
 export function MediaPanelView(props: MediaPanelViewProps) {
   const {
     byKind,
-    skippedByKind,
     checkedKinds,
     selectedKeys,
     expandedKind,
@@ -87,7 +85,6 @@ export function MediaPanelView(props: MediaPanelViewProps) {
     <div>
       <AssetList
         byKind={byKind}
-        skippedByKind={skippedByKind}
         checkedKinds={checkedKinds}
         selectedKeys={selectedKeys}
         expandedKind={expandedKind}

@@ -21,7 +21,6 @@ const model: AssetRowModel = assetRowModel({
   selectedCount: 0,
   resolving: false,
   job: null,
-  skippedCount: 0,
 });
 
 // 回调必须是**稳定引用**（真实调用点都用 useCallback）：每次渲染新建一个箭头函数
@@ -93,8 +92,8 @@ describe('areAssetRowModelsEqual', () => {
 
   it('完成态的计数变了算不等', () => {
     const done = (count: number): AssetRowModel => ({
-      status: { kind: 'skipped', count },
-      countText: `✓ ${count} · 已存在`,
+      status: { kind: 'done', count },
+      countText: `✓ ${count}`,
       showDownload: true,
       showRetry: false,
     });

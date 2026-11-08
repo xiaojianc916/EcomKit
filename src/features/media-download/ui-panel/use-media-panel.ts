@@ -48,7 +48,6 @@ export interface MediaPanelState {
   /** 交给渲染层的全部内容：视图需要的字段 + 主按钮模型 */
   view: {
     byKind: Record<AssetKind, Asset[]>;
-    skippedByKind: Partial<Record<AssetKind, number>>;
     checkedKinds: ReadonlySet<AssetKind>;
     selectedKeys: ReadonlySet<string>;
     expandedKind: AssetKind | null;
@@ -208,17 +207,6 @@ export function useMediaPanel(args: MediaPanelArgs): MediaPanelState {
     return previewFolderPath(planForKinds);
   }, [planForKinds, platformName]);
 
-  // 每一类里「已存在、这次跳过」的数量（§10.4 素材行的「✓ N · 已存在」）
-  const skippedByKind = useMemo(() => {
-    const out: Partial<Record<AssetKind, number>> = {};
-    if (job === null) return out;
-    for (const kind of KIND_ORDER) {
-      const group = job.byGroup[kind];
-      if (group !== undefined && group.skipped > 0) out[kind] = group.skipped;
-    }
-    return out;
-  }, [job]);
-
   // 「全选」按快照里实际有素材的类别算：计划里的 counts 只统计**已勾选**的类别，
   // 全部取消勾选后 counts 全 0，再点「全选」就会传下去一个空数组（看起来像没反应）。
   const nonEmptyKinds = useMemo(
@@ -276,7 +264,6 @@ export function useMediaPanel(args: MediaPanelArgs): MediaPanelState {
   return {
     view: {
       byKind,
-      skippedByKind,
       checkedKinds,
       selectedKeys,
       expandedKind,

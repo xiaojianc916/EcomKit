@@ -28,8 +28,6 @@ export interface AssetListProps {
   expandedKind: AssetKind | null;
   resolving: boolean;
   job: JobRecord | null;
-  /** 已存在的文件数（按类别），用于显示「已存在」 */
-  skippedByKind?: Partial<Record<AssetKind, number>>;
   /** SKU 规格标签：asset.key → 文字 */
   skuLabels?: ReadonlyMap<string, string>;
   onToggleCheck(kind: AssetKind): void;
@@ -53,7 +51,6 @@ export function AssetList(props: AssetListProps) {
     expandedKind,
     resolving,
     job,
-    skippedByKind,
     skuLabels,
     onToggleCheck,
     onToggleAll,
@@ -87,7 +84,6 @@ export function AssetList(props: AssetListProps) {
             selectedCount,
             resolving,
             job,
-            skippedCount: skippedByKind?.[kind] ?? 0,
           });
           return (
             <li key={kind} aria-label={kindTitle(kind)} style={{ listStyle: 'none' }}>

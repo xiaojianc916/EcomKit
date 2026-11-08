@@ -61,7 +61,6 @@ export function areAssetRowModelsEqual(a: AssetRowModel, b: AssetRowModel): bool
         sa.failed === (sb as typeof sa).failed
       );
     case 'done':
-    case 'skipped':
       return sa.count === (sb as typeof sa).count;
     default:
       // resolving / ready / empty 没有负载字段

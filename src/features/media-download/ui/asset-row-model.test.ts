@@ -35,7 +35,6 @@ const base = {
   selectedCount: 0,
   resolving: false,
   job: null,
-  skippedCount: 0,
 };
 
 describe('assetRowModel（§10.4 素材行表）', () => {
@@ -87,12 +86,14 @@ describe('assetRowModel（§10.4 素材行表）', () => {
     expect(m.countText).toBe('✓ 26');
   });
 
-  it('跳过（已存在）：✓ 26 · 已存在', () => {
+  it('全部已存在：仍然只显示 ✓ 26，不加「已存在」文案', () => {
     const job = makeJob({
       status: 'done',
       byGroup: { detail: { total: 26, done: 0, failed: 0, skipped: 26 } },
     });
-    expect(assetRowModel({ ...base, job, skippedCount: 26 }).countText).toBe('✓ 26 · 已存在');
+    const m = assetRowModel({ ...base, job });
+    expect(m.status.kind).toBe('done');
+    expect(m.countText).toBe('✓ 26');
   });
 
   it('部分失败：24/26 · 2 个失败，加“重试”', () => {

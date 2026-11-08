@@ -16,7 +16,6 @@ export type AssetRowStatus =
   | { kind: 'progress'; done: number; total: number }
   | { kind: 'done'; count: number }
   | { kind: 'partial'; done: number; total: number; failed: number }
-  | { kind: 'skipped'; count: number }
   | { kind: 'empty' };
 
 export interface AssetRowModel {
@@ -45,8 +44,6 @@ export interface AssetRowStateInput {
   resolving: boolean;
   /** 整个任务（byGroup 里取这一类） */
   job: JobRecord | null;
-  /** 已保存记录里这一类已有的文件数（§9.11 跳过） */
-  skippedCount: number;
 }
 
 /** 从 JobRecord.byGroup 里取这一类的进度（§6.4 进度聚合） */
@@ -77,7 +74,7 @@ function failedOf(job: JobRecord | null, kind: AssetKind): number {
  * 为什么“识别中”最优先：那时连数量都不知道，显示任何数字都是错的。
  */
 export function assetRowModel(input: AssetRowStateInput): AssetRowModel {
-  const { total, selectedCount, resolving, job, kind, skippedCount } = input;
+  const { total, selectedCount, resolving, job, kind } = input;
 
   if (resolving) {
     return { status: { kind: 'resolving' }, countText: '—', showDownload: false, showRetry: false };
@@ -120,14 +117,6 @@ export function assetRowModel(input: AssetRowStateInput): AssetRowModel {
   // 完成：✓ 26（对勾是中性深灰，不用绿色，§10.4）
   if (job !== null && job.status === 'done' && group !== null) {
     const done = group.done + group.skipped;
-    if (skippedCount > 0 && done >= group.total) {
-      return {
-        status: { kind: 'skipped', count: done },
-        countText: `✓ ${done} · 已存在`,
-        showDownload: true,
-        showRetry: false,
-      };
-    }
     return {
       status: { kind: 'done', count: done },
       countText: `✓ ${done}`,
